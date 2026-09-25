@@ -1,0 +1,11 @@
+# ignore our own .ghost setup for now
+.ghost/
+ghost.toml
+
+# not needed
+.superpowers/
+docs/superpowers
+bin/
+.claude/
+
+.DS_Store
