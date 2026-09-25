@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/ThreeDotsLabs/watermill"
-	"github.com/xiy/ruga/internal/bus"
-	"github.com/xiy/ruga/internal/event"
+	"github.com/haha-systems/ruga/internal/bus"
+	"github.com/haha-systems/ruga/internal/event"
 	codexgo "github.com/zealbase/codex-app-server-go"
 )
 

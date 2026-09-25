@@ -9,10 +9,10 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"github.com/xiy/ruga/internal/backend"
-	"github.com/xiy/ruga/internal/backend/codex"
-	"github.com/xiy/ruga/internal/bus"
-	"github.com/xiy/ruga/internal/ui"
+	"github.com/haha-systems/ruga/internal/backend"
+	"github.com/haha-systems/ruga/internal/backend/codex"
+	"github.com/haha-systems/ruga/internal/bus"
+	"github.com/haha-systems/ruga/internal/ui"
 )
 
 func main() {

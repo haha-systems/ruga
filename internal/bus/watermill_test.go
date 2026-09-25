@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xiy/ruga/internal/event"
+	"github.com/haha-systems/ruga/internal/event"
 )
 
 func TestWatermillPreservesOrderWithoutBlockingPublisher(t *testing.T) {

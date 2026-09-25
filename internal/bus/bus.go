@@ -3,7 +3,7 @@ package bus
 import (
 	"context"
 
-	"github.com/xiy/ruga/internal/event"
+	"github.com/haha-systems/ruga/internal/event"
 )
 
 const Topic = "application.events"

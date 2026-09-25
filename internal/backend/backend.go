@@ -3,7 +3,7 @@ package backend
 import (
 	"context"
 
-	"github.com/xiy/ruga/internal/bus"
+	"github.com/haha-systems/ruga/internal/bus"
 )
 
 // Backend starts a provider session and publishes normalized activity.

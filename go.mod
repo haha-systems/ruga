@@ -1,4 +1,4 @@
-module github.com/xiy/ruga
+module github.com/haha-systems/ruga
 
 go 1.25.0
 

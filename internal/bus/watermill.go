@@ -10,7 +10,7 @@ import (
 	"github.com/ThreeDotsLabs/watermill"
 	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/ThreeDotsLabs/watermill/pubsub/gochannel"
-	"github.com/xiy/ruga/internal/event"
+	"github.com/haha-systems/ruga/internal/event"
 )
 
 // Watermill serializes publication on a worker. GoChannel waits for subscriber
