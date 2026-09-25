@@ -5,8 +5,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/haha-systems/ruga/internal/backend"
@@ -56,11 +58,32 @@ func run(codexBinary string) error {
 			Interrupt:       interactive.Interrupt,
 		}
 	}
-	if err := ui.Run(ctx, events, backendClient.Submit, actions); err != nil && ctx.Err() == nil {
+	branch := gitBranch(workingDir)
+	project := filepath.Base(workingDir)
+	modelName := ""
+	if display, ok := backendClient.(backend.ModelDisplay); ok {
+		modelName = display.ModelName()
+	}
+	if err := ui.Run(ctx, events, backendClient.Submit, actions, ui.Config{
+		Project: project, Branch: branch, Backend: "Codex", Model: modelName,
+	}); err != nil && ctx.Err() == nil {
 		return err
 	}
 	stop()
 	return nil
+}
+
+func gitBranch(dir string) string {
+	command := exec.Command("git", "-C", dir, "rev-parse", "--abbrev-ref", "HEAD")
+	value, err := command.Output()
+	if err != nil {
+		return ""
+	}
+	branch := strings.TrimSpace(string(value))
+	if branch == "HEAD" {
+		return ""
+	}
+	return branch
 }
 
 func fatal(err error) {

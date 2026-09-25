@@ -8,6 +8,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -24,6 +25,13 @@ type approvalResultMsg struct {
 	err       error
 }
 type interruptResultMsg struct{ err error }
+
+type Config struct {
+	Project string
+	Branch  string
+	Backend string
+	Model   string
+}
 
 type Actions struct {
 	ResolveApproval func(context.Context, string, event.ApprovalDecision) error
@@ -49,6 +57,14 @@ type model struct {
 	approvals    []event.ApprovalRequest
 	submitting   map[string]bool
 	status       string
+	notice       string
+	project      string
+	branch       string
+	backend      string
+	modelName    string
+	usage        string
+	search       textinput.Model
+	searchActive bool
 	focus        focusTarget
 	turnActive   bool
 	interrupting bool
@@ -66,18 +82,31 @@ var (
 	resolvedStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
 	rejectedStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
 	approvalPanelStyle = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("3")).Padding(0, 1)
+	userStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+	assistantStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
+	errorStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+	commandStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
 )
 
-func Run(ctx context.Context, events <-chan event.Event, submit func(context.Context, string) error, actions Actions) error {
+func Run(ctx context.Context, events <-chan event.Event, submit func(context.Context, string) error, actions Actions, configs ...Config) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	input := textinput.New()
 	input.Prompt = "› "
 	input.Placeholder = "Message Codex and press Enter"
 	input.Focus()
+	search := textinput.New()
+	search.Prompt = "/ "
+	search.Placeholder = "filter timeline"
+	config := Config{}
+	if len(configs) > 0 {
+		config = configs[0]
+	}
 	program := tea.NewProgram(model{
 		stream: batchEvents(ctx, events), input: input, submit: submit, actions: actions,
 		ctx: ctx, status: "idle", focus: focusComposer, submitting: make(map[string]bool),
+		project: config.Project, branch: config.Branch, backend: config.Backend,
+		modelName: config.Model, search: search,
 	}, tea.WithContext(ctx), tea.WithAltScreen())
 	_, err := program.Run()
 	return err
@@ -152,14 +181,15 @@ func (m model) View() string {
 	if !m.ready {
 		return "Starting Codex App Server…"
 	}
-	statusStyle := mutedStyle
-	if m.status == "working" || m.status == "interrupting" {
-		statusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
-	} else if m.status == "error" {
-		statusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+	header := m.headerLine()
+	footer := mutedStyle.Render(fitLine(m.footerKeys(), max(1, m.width)))
+	if m.notice != "" {
+		footer = mutedStyle.Render(fitLine(m.notice+"  ·  "+m.footerKeys(), max(1, m.width)))
 	}
-	footer := statusStyle.Render(m.status) + mutedStyle.Render("  ·  "+m.footerKeys())
-	parts := []string{titleStyle.Render("ruga  ·  Codex App Server")}
+	parts := []string{header}
+	if m.searchActive || m.search.Value() != "" {
+		parts = append(parts, m.search.View())
+	}
 	if panel := m.approvalPanel(); panel != "" {
 		parts = append(parts, panel)
 	}
@@ -169,12 +199,17 @@ func (m model) View() string {
 
 func (m *model) resize(width, height int) {
 	m.width, m.height = max(1, width), max(1, height)
-	m.input.Width = max(1, width-4)
+	m.input.Width = max(1, width-lipgloss.Width(m.input.Prompt)-2)
+	m.search.Width = max(1, width-lipgloss.Width(m.search.Prompt)-2)
 	panelHeight := 0
 	if panel := m.approvalPanel(); panel != "" {
 		panelHeight = lipgloss.Height(panel) + 1
 	}
-	viewportHeight := max(1, height-3-panelHeight)
+	chromeHeight := 3 // header, composer, footer
+	if m.searchActive || m.search.Value() != "" {
+		chromeHeight++
+	}
+	viewportHeight := max(1, height-chromeHeight-panelHeight)
 	if !m.ready {
 		m.viewport = viewport.New(max(1, width), viewportHeight)
 		m.ready = true
@@ -185,14 +220,50 @@ func (m *model) resize(width, height int) {
 }
 
 func (m model) footerKeys() string {
+	copyKeys := " · / filter"
 	switch m.focus {
 	case focusApproval:
-		return "y/enter accept · n/esc reject · tab focus · ctrl+x interrupt · ctrl+c quit"
+		return "y/enter accept · n/esc reject · tab focus · ctrl+x interrupt · ctrl+c quit" + copyKeys
 	case focusTimeline:
-		return "↑/↓ scroll · pgup/pgdn page · g/G top/bottom · tab composer · ctrl+x interrupt · ctrl+c quit"
+		return "↑/↓ scroll · pgup/pgdn page · g/G top/bottom · c copy · tab composer · ctrl+x interrupt · ctrl+c quit" + copyKeys
 	default:
-		return "enter send · tab timeline · ctrl+x interrupt · ctrl+c quit"
+		return "enter send · tab timeline · ctrl+x interrupt · ctrl+c quit" + copyKeys
 	}
+}
+
+func (m model) headerLine() string {
+	parts := []string{}
+	if m.project != "" {
+		parts = append(parts, m.project)
+	}
+	if m.branch != "" {
+		parts = append(parts, "git:"+m.branch)
+	}
+	if m.backend != "" {
+		parts = append(parts, m.backend)
+	}
+	if m.modelName != "" {
+		parts = append(parts, m.modelName)
+	}
+	if m.usage != "" {
+		parts = append(parts, m.usage)
+	}
+	if len(parts) == 0 {
+		parts = append(parts, "ruga")
+	}
+	statusStyle := mutedStyle
+	if m.status == "working" || m.status == "interrupting" {
+		statusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
+	} else if m.status == "error" {
+		statusStyle = errorStyle
+	}
+	state := "● " + m.status
+	if m.width <= lipgloss.Width(state)+3 {
+		return statusStyle.Render(fitLine(state, m.width))
+	}
+	metadataWidth := max(1, m.width-lipgloss.Width(state)-3)
+	metadata := titleStyle.Render(fitLine(strings.Join(parts, "  ·  "), metadataWidth))
+	return metadata + mutedStyle.Render("  ·  ") + statusStyle.Render(state)
 }
 
 func (m model) approvalPanel() string {
@@ -337,9 +408,27 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.status = "interrupting"
 		return m, interruptTurn(m.ctx, m.actions.Interrupt)
 	case tea.KeyTab:
+		if m.searchActive {
+			m.searchActive = false
+			m.search.Blur()
+			m.resizeIfReady()
+			return m, nil
+		}
 		m.nextFocus()
 		return m, nil
 	case tea.KeyEsc:
+		if m.searchActive {
+			m.search.SetValue("")
+			m.searchActive = false
+			m.search.Blur()
+			m.resizeIfReady()
+			return m, nil
+		}
+		if m.search.Value() != "" && m.focus == focusTimeline {
+			m.search.SetValue("")
+			m.resizeIfReady()
+			return m, nil
+		}
 		switch m.focus {
 		case focusApproval:
 			return m.decideActiveApproval(event.ApprovalReject)
@@ -351,6 +440,18 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+	}
+	if m.searchActive {
+		if msg.Type == tea.KeyEnter {
+			m.searchActive = false
+			m.search.Blur()
+			m.resizeIfReady()
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.search, cmd = m.search.Update(msg)
+		m.resizeIfReady()
+		return m, cmd
 	}
 
 	if m.focus == focusApproval {
@@ -364,6 +465,22 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if m.focus == focusTimeline {
+		if msg.Type == tea.KeyRunes {
+			switch msg.String() {
+			case "/":
+				m.searchActive = true
+				m.search.Focus()
+				m.resizeIfReady()
+				return m, textinput.Blink
+			case "c":
+				if err := clipboard.WriteAll(m.copyTimeline()); err != nil {
+					m.notice = "copy unavailable"
+				} else {
+					m.notice = "timeline copied"
+				}
+				return m, nil
+			}
+		}
 		switch msg.Type {
 		case tea.KeyUp:
 			m.viewport.LineUp(1)
@@ -427,6 +544,14 @@ func (m *model) resizeIfReady() {
 }
 
 func (m *model) add(ev event.Event) {
+	if ev.Backend != "" && ev.Backend != "app" {
+		if m.backend == "" {
+			m.backend = strings.ToUpper(ev.Backend[:1]) + ev.Backend[1:]
+		}
+	}
+	if name := eventModel(ev); name != "" {
+		m.modelName = name
+	}
 	switch ev.Kind {
 	case "command.started":
 		ev.Data = map[string]any{"output": map[string]string{}, "outputBytes": 0}
@@ -481,6 +606,9 @@ func (m *model) add(ev event.Event) {
 	case "status.update":
 		if ev.ItemID != "" {
 			if index := m.findEvent(ev.ItemID, "status.update"); index >= 0 {
+				if m.events[index].Summary != "" && ev.Summary != "" {
+					m.events[index].Summary += " · "
+				}
 				m.events[index].Summary += ev.Summary
 				m.events[index].Timestamp = ev.Timestamp
 				return
@@ -500,6 +628,14 @@ func (m *model) add(ev event.Event) {
 		ev.Raw = nil
 		if ev.Kind == "file.output" {
 			ev.Data = nil
+		} else {
+			m.usage = compactUsage(ev.Summary)
+			for index := len(m.events) - 1; index >= 0; index-- {
+				if m.events[index].Kind == "usage.updated" {
+					m.events[index] = ev
+					return
+				}
+			}
 		}
 		m.events = append(m.events, ev)
 	case "approval.requested":
@@ -669,6 +805,9 @@ func (m *model) refresh(follow bool) {
 	}
 	rows := make([]string, 0, len(m.events))
 	for _, ev := range m.events {
+		if !matchesFilter(ev, m.search.Value()) {
+			continue
+		}
 		timestamp := ev.Timestamp.Local().Format("15:04:05")
 		detail := strings.TrimSpace(ev.Summary)
 		if detail == "" {
@@ -678,6 +817,8 @@ func (m *model) refresh(follow bool) {
 			detail = fmt.Sprintf("%s  %s", detail, compact(string(ev.Raw), 240))
 		}
 		line := fmt.Sprintf("%s  %-18s %s", timestamp, ev.Kind, detail)
+		style := eventStyle(ev.Kind)
+		line = style.Render(line)
 		switch ev.Kind {
 		case "approval.requested":
 			approval := "action details unavailable"
@@ -719,6 +860,73 @@ func (m *model) refresh(follow bool) {
 	if follow {
 		m.viewport.GotoBottom()
 	}
+}
+
+func (m model) copyTimeline() string {
+	var rows []string
+	for _, ev := range m.events {
+		if !matchesFilter(ev, m.search.Value()) {
+			continue
+		}
+		line := strings.TrimSpace(ev.Kind + "  " + ev.Summary)
+		if ev.Kind == "approval.requested" && ev.Approval != nil {
+			line += "\n" + approvalDetail(*ev.Approval)
+		}
+		if streams, ok := ev.Data["output"].(map[string]string); ok {
+			for _, name := range []string{"stdout", "stderr"} {
+				if value := strings.TrimSpace(streams[name]); value != "" {
+					line += "\n" + name + ":\n" + value
+				}
+			}
+		}
+		rows = append(rows, line)
+	}
+	return strings.Join(rows, "\n\n")
+}
+
+func matchesFilter(ev event.Event, query string) bool {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return true
+	}
+	parts := []string{ev.Kind, ev.Summary, ev.Source}
+	if ev.Approval != nil {
+		parts = append(parts, approvalDetail(*ev.Approval), ev.Approval.Reason)
+	}
+	if streams, ok := ev.Data["output"].(map[string]string); ok {
+		parts = append(parts, streams["stdout"], streams["stderr"])
+	}
+	return strings.Contains(strings.ToLower(strings.Join(parts, " ")), strings.ToLower(query))
+}
+
+func eventStyle(kind string) lipgloss.Style {
+	switch kind {
+	case "user.message":
+		return userStyle
+	case "message.delta", "message.completed":
+		return assistantStyle
+	case "command.started", "command.completed":
+		return commandStyle
+	case "error", "warning", "backend.unknown":
+		return errorStyle
+	default:
+		return lipgloss.NewStyle()
+	}
+}
+
+func eventModel(ev event.Event) string {
+	for _, key := range []string{"model", "modelName", "model_name", "toModel"} {
+		if value, ok := ev.Data[key].(string); ok && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func compactUsage(value string) string {
+	value = strings.ReplaceAll(value, " total tokens", " tokens")
+	value = strings.ReplaceAll(value, "context ", "ctx ")
+	return strings.TrimSpace(value)
 }
 
 func indent(value, prefix string) string {

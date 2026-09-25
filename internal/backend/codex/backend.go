@@ -24,6 +24,7 @@ type Backend struct {
 	client             *codexgo.Client
 	thread             *codexgo.SessionThread
 	threadID           string
+	modelName          string
 	turnID             string
 	sub                *codexgo.EventSubscription
 	eventBus           bus.Bus
@@ -46,6 +47,19 @@ func (b *Backend) Start(ctx context.Context, eventBus bus.Bus) error {
 	)
 	if err != nil {
 		return fmt.Errorf("connect to Codex App Server: %w", err)
+	}
+	// Model metadata is useful for the status line but is not required to use
+	// the backend. Older or restricted servers may not support config/read.
+	configCtx, cancelConfig := context.WithTimeout(ctx, 2*time.Second)
+	result, readErr := client.ConfigRead(configCtx, codexgo.ConfigReadRequest{CWD: b.cwd})
+	cancelConfig()
+	if readErr == nil {
+		var config struct {
+			Model string `json:"model"`
+		}
+		if json.Unmarshal(result.Config, &config) == nil {
+			b.modelName = strings.TrimSpace(config.Model)
+		}
 	}
 	sub := client.Events()
 	b.mu.Lock()
@@ -75,6 +89,12 @@ func (b *Backend) Start(ctx context.Context, eventBus bus.Bus) error {
 	b.thread, b.threadID = thread, thread.ID()
 	b.mu.Unlock()
 	return nil
+}
+
+func (b *Backend) ModelName() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.modelName
 }
 
 func (b *Backend) forward(ctx context.Context, sub *codexgo.EventSubscription, eventBus bus.Bus) {

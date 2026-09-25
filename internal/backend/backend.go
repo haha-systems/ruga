@@ -20,3 +20,9 @@ type Interactive interface {
 	ResolveApproval(context.Context, string, event.ApprovalDecision) error
 	Interrupt(context.Context) error
 }
+
+// ModelDisplay exposes the effective model for providers that can report it.
+// It is optional so providers without model metadata remain usable.
+type ModelDisplay interface {
+	ModelName() string
+}

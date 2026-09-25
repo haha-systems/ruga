@@ -3,7 +3,9 @@
 Ruga is a minimal terminal coding harness for Codex App Server. It starts the
 local Codex server, opens a thread, normalizes server activity, publishes
 application events through Watermill GoChannel, and displays them in a
-scrollable Bubble Tea timeline.
+scrollable Bubble Tea timeline. The compact header shows the project, Git
+branch when available, backend, model and latest token/context usage when the
+server provides them.
 
 ## Run
 
@@ -34,6 +36,10 @@ recorded in the timeline.
 
 `Tab` cycles focus between the composer, timeline, and an active approval.
 Timeline focus enables arrow and page scrolling, `g`/`Home` to jump to the top,
-and `G`/`End` to jump to the bottom. `Esc` returns from the timeline to the
-composer or clears a composer draft. `Ctrl+X` interrupts the active turn;
-`Ctrl+C` exits.
+and `G`/`End` to jump to the bottom. Press `/` while the timeline is focused to
+filter events by kind, source, text, command output, or approval details; `Enter`
+keeps the filter and `Esc` clears it. Press `c` to copy the filtered timeline to
+the system clipboard.
+Terminal text selection remains available for copying a smaller passage.
+`Esc` returns from the timeline to the composer or clears a composer draft.
+`Ctrl+X` interrupts the active turn; `Ctrl+C` exits.
