@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -27,6 +29,8 @@ type model struct {
 	status   string
 	ready    bool
 }
+
+const maxCommandOutputBytes = 4096
 
 var (
 	titleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
@@ -132,17 +136,180 @@ func (m model) View() string {
 }
 
 func (m *model) add(ev event.Event) {
-	// Keep streamed text updates readable without retaining a redraw-sized row
-	// for every protocol delta.
-	if ev.Kind == "message.delta" && len(m.events) > 0 {
-		last := &m.events[len(m.events)-1]
-		if last.Kind == ev.Kind && last.ItemID == ev.ItemID {
-			last.Summary += ev.Summary
-			last.Timestamp = ev.Timestamp
-			return
+	switch ev.Kind {
+	case "command.started":
+		ev.Data = map[string]any{"output": map[string]string{}, "outputBytes": 0}
+		ev.Raw = nil
+		m.events = append(m.events, ev)
+	case "command.output":
+		if index := m.findEvent(ev.ItemID, "command.started", "command.completed"); index >= 0 {
+			m.addCommandOutput(&m.events[index], ev)
+		}
+	case "command.completed":
+		if index := m.findEvent(ev.ItemID, "command.started", "command.completed"); index >= 0 {
+			entry := &m.events[index]
+			if outputBytes(*entry) == 0 {
+				if item := nestedItem(ev); item != nil {
+					if output, ok := item["aggregatedOutput"].(string); ok {
+						m.appendOutput(entry, "stdout", output)
+					}
+				}
+			}
+			entry.Kind, entry.Summary = ev.Kind, ev.Summary
+			entry.Raw = nil
+		} else {
+			ev.Data = map[string]any{"output": map[string]string{}, "outputBytes": 0}
+			ev.Raw = nil
+			m.events = append(m.events, ev)
+		}
+	case "tool.started":
+		ev.Raw = nil
+		ev.Data = nil
+		m.events = append(m.events, ev)
+	case "tool.progress":
+		if index := m.findEvent(ev.ItemID, "tool.started", "tool.completed"); index >= 0 && ev.Summary != "" {
+			m.events[index].Data = map[string]any{"progress": compact(ev.Summary, 240)}
+		}
+	case "tool.completed":
+		if index := m.findEvent(ev.ItemID, "tool.started", "tool.completed"); index >= 0 {
+			entry := &m.events[index]
+			entry.Kind, entry.Summary = ev.Kind, ev.Summary
+			entry.Raw, entry.Data = nil, nil
+		} else {
+			ev.Raw, ev.Data = nil, nil
+			m.events = append(m.events, ev)
+		}
+	case "message.delta":
+		if index := m.findEvent(ev.ItemID, "message.delta"); index >= 0 {
+			m.events[index].Summary += ev.Summary
+			m.events[index].Timestamp = ev.Timestamp
+		} else {
+			ev.Raw, ev.Data = nil, nil
+			m.events = append(m.events, ev)
+		}
+	case "status.update":
+		if ev.ItemID != "" {
+			if index := m.findEvent(ev.ItemID, "status.update"); index >= 0 {
+				m.events[index].Summary += ev.Summary
+				m.events[index].Timestamp = ev.Timestamp
+				return
+			}
+		}
+		ev.Data = nil
+		ev.Raw = nil
+		m.events = append(m.events, ev)
+	case "file.changed":
+		ev.Raw, ev.Data = nil, nil
+		if index := m.findEvent(ev.ItemID, "file.changed"); index >= 0 {
+			m.events[index].Summary = ev.Summary
+		} else {
+			m.events = append(m.events, ev)
+		}
+	case "file.output", "usage.updated":
+		ev.Raw = nil
+		if ev.Kind == "file.output" {
+			ev.Data = nil
+		}
+		m.events = append(m.events, ev)
+	default:
+		if ev.Kind == "backend.unknown" {
+			if len(ev.Raw) > 240 {
+				ev.Raw = append(ev.Raw[:240:240], []byte("…")...)
+			}
+			ev.Data = nil
+		}
+		m.events = append(m.events, ev)
+	}
+}
+
+func (m *model) findEvent(itemID string, kinds ...string) int {
+	if itemID == "" {
+		return -1
+	}
+	for i := len(m.events) - 1; i >= 0; i-- {
+		if m.events[i].ItemID != itemID {
+			continue
+		}
+		for _, kind := range kinds {
+			if m.events[i].Kind == kind {
+				return i
+			}
 		}
 	}
-	m.events = append(m.events, ev)
+	return -1
+}
+
+func (m *model) addCommandOutput(entry *event.Event, output event.Event) {
+	stream := "stdout"
+	if value, ok := output.Data["stream"].(string); ok && value != "" {
+		stream = value
+	}
+	m.appendOutput(entry, stream, output.Summary)
+}
+
+func (m *model) appendOutput(entry *event.Event, stream, value string) {
+	value = safeTerminalText(value)
+	data := entry.Data
+	if data == nil {
+		data = map[string]any{}
+	}
+	streams, _ := data["output"].(map[string]string)
+	if streams == nil {
+		streams = map[string]string{}
+	}
+	used, _ := data["outputBytes"].(int)
+	remaining := maxCommandOutputBytes - used
+	accepted := 0
+	if remaining > 0 {
+		prefix := utf8Prefix(value, remaining)
+		streams[stream] += prefix
+		accepted = len(prefix)
+		used += accepted
+	}
+	data["output"], data["outputBytes"] = streams, used
+	if accepted < len(value) {
+		data["omittedBytes"] = omittedOutputBytes(data) + len(value) - accepted
+	}
+	entry.Data = data
+}
+
+func outputBytes(entry event.Event) int {
+	value, _ := entry.Data["outputBytes"].(int)
+	return value
+}
+
+func omittedOutputBytes(data map[string]any) int {
+	value, _ := data["omittedBytes"].(int)
+	return value
+}
+
+func nestedItem(ev event.Event) map[string]any {
+	item, _ := ev.Data["item"].(map[string]any)
+	return item
+}
+
+func safeTerminalText(value string) string {
+	value = strings.ToValidUTF8(value, "�")
+	var safe strings.Builder
+	for _, r := range value {
+		if r == '\n' || r == '\t' || !unicode.IsControl(r) {
+			safe.WriteRune(r)
+		} else {
+			safe.WriteRune('�')
+		}
+	}
+	return safe.String()
+}
+
+func utf8Prefix(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+	value = value[:limit]
+	for !utf8.ValidString(value) {
+		value = value[:len(value)-1]
+	}
+	return value
 }
 
 func (m *model) refresh(follow bool) {
@@ -160,6 +327,23 @@ func (m *model) refresh(follow bool) {
 			detail = fmt.Sprintf("%s  %s", detail, compact(string(ev.Raw), 240))
 		}
 		line := fmt.Sprintf("%s  %-18s %s", timestamp, ev.Kind, detail)
+		if ev.Kind == "command.started" || ev.Kind == "command.completed" {
+			if streams, ok := ev.Data["output"].(map[string]string); ok {
+				for _, name := range []string{"stdout", "stderr"} {
+					if output := strings.TrimRight(streams[name], "\n"); output != "" {
+						line += "\n          " + mutedStyle.Render(name+":") + "\n" + indent(output, "            ")
+					}
+				}
+			}
+			if omitted := omittedOutputBytes(ev.Data); omitted > 0 {
+				line += fmt.Sprintf("\n          %s", mutedStyle.Render(fmt.Sprintf("… %d output bytes omitted (limit %d)", omitted, maxCommandOutputBytes)))
+			}
+		}
+		if ev.Kind == "tool.started" {
+			if progress, ok := ev.Data["progress"].(string); ok {
+				line += "\n          " + mutedStyle.Render(progress)
+			}
+		}
 		if ev.ThreadID != "" && ev.Kind == "thread.started" {
 			line += "\n          " + mutedStyle.Render("thread "+ev.ThreadID)
 		}
@@ -171,12 +355,20 @@ func (m *model) refresh(follow bool) {
 	}
 }
 
+func indent(value, prefix string) string {
+	lines := strings.Split(value, "\n")
+	for i := range lines {
+		lines[i] = prefix + lines[i]
+	}
+	return strings.Join(lines, "\n")
+}
+
 func compact(value string, limit int) string {
 	value = strings.Join(strings.Fields(value), " ")
 	if len(value) <= limit {
 		return value
 	}
-	return value[:limit] + "…"
+	return utf8Prefix(value, limit) + "…"
 }
 
 func waitBatch(stream <-chan []event.Event) tea.Cmd {

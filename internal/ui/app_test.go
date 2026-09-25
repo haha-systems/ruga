@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -70,6 +71,80 @@ func TestDeltaEventsCoalesceInTimeline(t *testing.T) {
 	}
 	if len(m.events) != 1 || m.events[0].Summary != "Codex works" {
 		t.Fatalf("coalesced events = %+v", m.events)
+	}
+}
+
+func TestCommandOutputIsBoundedAndLifecycleUpdatesInPlace(t *testing.T) {
+	m := model{}
+	m.add(event.Event{Kind: "command.started", ItemID: "cmd-1", Summary: "go test ./...", Timestamp: time.Now()})
+	m.add(event.Event{Kind: "command.output", ItemID: "cmd-1", Summary: strings.Repeat("x", maxCommandOutputBytes+17), Data: map[string]any{"stream": "stderr"}, Timestamp: time.Now()})
+	m.add(event.Event{Kind: "command.completed", ItemID: "cmd-1", Summary: "go test ./... · exit 1", Timestamp: time.Now()})
+	if len(m.events) != 1 {
+		t.Fatalf("command lifecycle created %d timeline entries, want 1", len(m.events))
+	}
+	entry := m.events[0]
+	if entry.Kind != "command.completed" || entry.Summary != "go test ./... · exit 1" {
+		t.Fatalf("completed command = %+v", entry)
+	}
+	if outputBytes(entry) != maxCommandOutputBytes || omittedOutputBytes(entry.Data) != 17 {
+		t.Fatalf("output limits = retained %d, omitted %d", outputBytes(entry), omittedOutputBytes(entry.Data))
+	}
+	if got := len(entry.Data["output"].(map[string]string)["stderr"]); got != maxCommandOutputBytes {
+		t.Fatalf("retained output bytes = %d, want %d", got, maxCommandOutputBytes)
+	}
+	m.viewport = viewport.New(100, 20)
+	m.ready = true
+	m.refresh(true)
+	if view := m.viewport.View(); !strings.Contains(view, "stderr:") || !strings.Contains(view, "17 output bytes omitted") {
+		t.Fatalf("command output rendering is missing details: %q", view)
+	}
+}
+
+func TestCommandOutputPreservesUTF8Boundary(t *testing.T) {
+	m := model{}
+	m.add(event.Event{Kind: "command.started", ItemID: "cmd-utf8"})
+	m.add(event.Event{Kind: "command.output", ItemID: "cmd-utf8", Summary: strings.Repeat("a", maxCommandOutputBytes-1) + "🙂"})
+	output := m.events[0].Data["output"].(map[string]string)["stdout"]
+	if !utf8.ValidString(output) || len(output) > maxCommandOutputBytes {
+		t.Fatalf("stored output is invalid or too large: bytes=%d", len(output))
+	}
+	if omittedOutputBytes(m.events[0].Data) != len("🙂") {
+		t.Fatalf("omitted bytes = %d, want %d", omittedOutputBytes(m.events[0].Data), len("🙂"))
+	}
+}
+
+func TestToolProgressAndCompletionUpdateSingleEntry(t *testing.T) {
+	m := model{}
+	m.add(event.Event{Kind: "tool.started", ItemID: "tool-1", Summary: "search"})
+	m.add(event.Event{Kind: "tool.progress", ItemID: "tool-1", Summary: "Found 3 results"})
+	m.add(event.Event{Kind: "tool.completed", ItemID: "tool-1", Summary: "search · succeeded"})
+	if len(m.events) != 1 || m.events[0].Kind != "tool.completed" || m.events[0].Summary != "search · succeeded" {
+		t.Fatalf("tool lifecycle entries = %+v", m.events)
+	}
+}
+
+func TestFirstClassEventsRemainReadable(t *testing.T) {
+	m := model{viewport: viewport.New(120, 20), ready: true}
+	for _, ev := range []event.Event{
+		{Kind: "file.changed", ItemID: "file-1", Summary: "fileChange internal/ui/app.go"},
+		{Kind: "file.changed", ItemID: "file-1", Summary: "update internal/ui/app.go"},
+		{Kind: "tool.started", ItemID: "tool-1", Summary: "docs/search"},
+		{Kind: "tool.progress", ItemID: "tool-1", Summary: "Found 3 results"},
+		{Kind: "tool.completed", ItemID: "tool-1", Summary: "docs/search · succeeded"},
+		{Kind: "status.update", Summary: "Checking the build"},
+		{Kind: "usage.updated", Summary: "40 in · 10 out · 50 total tokens · context 128000"},
+	} {
+		m.add(ev)
+	}
+	if len(m.events) != 4 {
+		t.Fatalf("file and tool lifecycles should coalesce, got %d rows", len(m.events))
+	}
+	m.refresh(true)
+	view := m.viewport.View()
+	for _, want := range []string{"file.changed", "internal/ui/app.go", "tool.completed", "docs/search · succeeded", "status.update", "Checking the build", "usage.updated", "50 total tokens"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("timeline rendering %q does not contain %q", view, want)
+		}
 	}
 }
 

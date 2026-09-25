@@ -20,4 +20,7 @@ Use the arrow and page keys to scroll; new events follow the bottom only while
 the timeline is already at the bottom. Press `Ctrl+C` or `Esc` to exit.
 
 Timeline events are buffered and coalesced for display so terminal rendering
-does not block App Server event processing.
+does not block App Server event processing. Command starts, output, and exit
+state share one timeline entry; each command retains at most 4 KiB of output,
+with an omission count when more arrives. File changes, tool calls, reasoning
+and status updates, and token usage have distinct event labels in the timeline.
