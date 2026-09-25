@@ -2,11 +2,14 @@ package codex
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ThreeDotsLabs/watermill"
 	"github.com/haha-systems/ruga/internal/bus"
@@ -164,25 +167,65 @@ func normalizeEvent(sdkEvent codexgo.Event) event.Event {
 func normalizeWithValue(method string, raw json.RawMessage, value any) event.Event {
 	data := make(map[string]any)
 	_ = json.Unmarshal(raw, &data)
-	kind, summary := methodKind(method), method
-	if method == "item/agentMessage/delta" {
+	item := objectField(data, "item")
+	itemType := stringField(item, "type")
+	kind := methodKind(method)
+	if method == "item/started" || method == "item/completed" {
+		kind = itemMethodKind(method, itemType)
+	}
+	summary := method
+	switch kind {
+	case "message.delta":
 		summary = messageDeltaText(data, value)
 		if summary == "" {
 			summary = method
 		}
-	} else if method == "error" {
-		if text, ok := data["message"].(string); ok {
-			summary = text
+	case "command.started":
+		summary = commandSummary(item, false)
+	case "command.completed":
+		summary = commandSummary(item, true)
+	case "command.output":
+		summary = commandOutput(data)
+	case "file.changed":
+		summary = fileSummary(changesFrom(data, item))
+	case "file.output":
+		summary = stringField(data, "output")
+		if summary == "" {
+			summary = stringField(data, "delta")
 		}
-	} else if item, ok := data["item"].(map[string]any); ok {
-		if itemType, ok := item["type"].(string); ok {
+	case "tool.started", "tool.completed":
+		summary = toolSummary(item, kind == "tool.completed")
+	case "tool.progress":
+		summary = stringField(data, "message")
+	case "status.update":
+		summary = statusSummary(method, data, item)
+	case "usage.updated":
+		summary = usageSummary(data)
+	case "error":
+		summary = firstString(data, "message", "error")
+	case "warning":
+		summary = firstString(data, "message", "summary", "details")
+	default:
+		if itemType != "" {
 			summary = kind + " " + itemType
+		}
+	}
+	itemID := stringField(data, "itemId")
+	if itemID == "" {
+		itemID = stringField(item, "id")
+	}
+	if kind == "command.output" {
+		delta, _ := data["deltaBase64"].(string)
+		if delta != "" {
+			if decoded, err := base64.StdEncoding.DecodeString(delta); err == nil {
+				summary = string(decoded)
+			}
 		}
 	}
 	return event.Event{
 		ID: watermill.NewUUID(), Timestamp: time.Now(), Backend: "codex", Kind: kind,
 		ThreadID: stringField(data, "threadId"), TurnID: stringField(data, "turnId"),
-		ItemID: stringField(data, "itemId"), Source: method, Summary: summary,
+		ItemID: itemID, Source: method, Summary: summary,
 		Data: data, Raw: append(json.RawMessage(nil), raw...),
 	}
 }
@@ -240,13 +283,229 @@ func methodKind(method string) string {
 		return "item.completed"
 	case "item/agentMessage/delta":
 		return "message.delta"
-	case "item/reasoning/summaryTextDelta", "item/reasoning/textDelta":
+	case "item/commandExecution/outputDelta", "command/exec/outputDelta", "process/outputDelta":
+		return "command.output"
+	case "item/fileChange/patchUpdated":
+		return "file.changed"
+	case "item/fileChange/outputDelta":
+		return "file.output"
+	case "thread/tokenUsage/updated":
+		return "usage.updated"
+	case "item/mcpToolCall/progress":
+		return "tool.progress"
+	case "item/plan/delta", "turn/plan/updated", "item/reasoning/summaryTextDelta", "item/reasoning/textDelta", "item/reasoning/summaryPartAdded":
 		return "status.update"
+	case "warning", "configWarning", "guardianWarning", "deprecationNotice":
+		return "warning"
 	case "error":
 		return "error"
 	default:
 		return "backend.unknown"
 	}
+}
+
+func itemMethodKind(method, itemType string) string {
+	switch itemType {
+	case "commandExecution":
+		if method == "item/started" {
+			return "command.started"
+		}
+		return "command.completed"
+	case "fileChange":
+		return "file.changed"
+	case "mcpToolCall", "dynamicToolCall", "collabAgentToolCall", "subAgentActivity", "webSearch", "imageView", "imageGeneration":
+		if method == "item/started" {
+			return "tool.started"
+		}
+		return "tool.completed"
+	case "reasoning", "plan":
+		return "status.update"
+	case "agentMessage":
+		if method == "item/started" {
+			return "message.started"
+		}
+		return "message.completed"
+	default:
+		return methodKind(method)
+	}
+}
+
+func commandSummary(item map[string]any, completed bool) string {
+	command := stringField(item, "command")
+	if command == "" {
+		command = "Command"
+	}
+	if !completed {
+		return command
+	}
+	parts := []string{command}
+	if code, ok := numberField(item, "exitCode"); ok {
+		parts = append(parts, fmt.Sprintf("exit %d", int64(code)))
+	} else if status := stringField(item, "status"); status != "" {
+		parts = append(parts, status)
+	}
+	if duration, ok := numberField(item, "durationMs"); ok {
+		parts = append(parts, fmt.Sprintf("%dms", int64(duration)))
+	}
+	return strings.Join(parts, " · ")
+}
+
+func commandOutput(data map[string]any) string {
+	if output := stringField(data, "output"); output != "" {
+		return output
+	}
+	if delta := stringField(data, "delta"); delta != "" {
+		return delta
+	}
+	if encoded := stringField(data, "deltaBase64"); encoded != "" {
+		decoded, err := base64.StdEncoding.DecodeString(encoded)
+		if err == nil {
+			return string(decoded)
+		}
+		return "[invalid base64 command output]"
+	}
+	return ""
+}
+
+func fileSummary(changes []any) string {
+	if len(changes) == 0 {
+		return "File changes updated"
+	}
+	parts := make([]string, 0, min(len(changes), 8))
+	for i, raw := range changes {
+		if i == 8 {
+			parts = append(parts, fmt.Sprintf("+%d more", len(changes)-i))
+			break
+		}
+		change, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		path := stringField(change, "path")
+		kind := stringField(change, "kind")
+		if path == "" {
+			continue
+		}
+		if kind != "" {
+			parts = append(parts, kind+" "+path)
+		} else {
+			parts = append(parts, path)
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+func changesFrom(data, item map[string]any) []any {
+	if changes, ok := data["changes"].([]any); ok {
+		return changes
+	}
+	if changes, ok := item["changes"].([]any); ok {
+		return changes
+	}
+	return nil
+}
+
+func toolSummary(item map[string]any, completed bool) string {
+	name := stringField(item, "tool")
+	if namespace := stringField(item, "namespace"); namespace != "" {
+		name = namespace + "." + name
+	}
+	if server := stringField(item, "server"); server != "" {
+		name = server + "/" + name
+	}
+	if name == "" {
+		name = "Tool"
+	}
+	if completed {
+		status := stringField(item, "status")
+		if success, ok := item["success"].(bool); ok {
+			if success {
+				status = "succeeded"
+			} else {
+				status = "failed"
+			}
+		}
+		if status != "" {
+			return name + " · " + status
+		}
+		return name + " · completed"
+	}
+	return name
+}
+
+func statusSummary(method string, data, item map[string]any) string {
+	if text := firstString(data, "text", "delta", "summary"); text != "" {
+		return text
+	}
+	if text := firstString(item, "text", "summary", "content"); text != "" {
+		return text
+	}
+	if method == "turn/plan/updated" {
+		if plan, ok := data["plan"]; ok {
+			return compactJSON(plan, 500)
+		}
+	}
+	if method == "item/reasoning/summaryPartAdded" {
+		return "Reasoning summary updated"
+	}
+	return "Status updated"
+}
+
+func usageSummary(data map[string]any) string {
+	usage, _ := data["tokenUsage"].(map[string]any)
+	if usage == nil {
+		usage, _ = data["usage"].(map[string]any)
+	}
+	last, _ := usage["last"].(map[string]any)
+	if last == nil {
+		last = usage
+	}
+	input, _ := numberField(last, "inputTokens")
+	output, _ := numberField(last, "outputTokens")
+	total, totalOK := numberField(last, "totalTokens")
+	if !totalOK {
+		total = input + output
+	}
+	parts := []string{fmt.Sprintf("%d in · %d out · %d total tokens", int64(input), int64(output), int64(total))}
+	if window, ok := numberField(usage, "modelContextWindow"); ok && window > 0 {
+		parts = append(parts, fmt.Sprintf("context %d", int64(window)))
+	}
+	return strings.Join(parts, " · ")
+}
+
+func compactJSON(value any, limit int) string {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return "Details unavailable"
+	}
+	text := string(encoded)
+	if len(text) > limit {
+		cut := limit
+		for cut > 0 && !utf8.RuneStart(text[cut]) {
+			cut--
+		}
+		text = text[:cut] + "…"
+	}
+	return text
+}
+
+func objectField(values map[string]any, field string) map[string]any {
+	value, _ := values[field].(map[string]any)
+	return value
+}
+
+func firstString(values map[string]any, fields ...string) string {
+	for _, field := range fields {
+		if value := stringField(values, field); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func numberField(values map[string]any, field string) (float64, bool) {
+	value, ok := values[field].(float64)
+	return value, ok
 }
 
 func stringField(data map[string]any, field string) string {
