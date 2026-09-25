@@ -49,7 +49,14 @@ func run(codexBinary string) error {
 	if err := backendClient.Start(ctx, eventBus); err != nil {
 		return err
 	}
-	if err := ui.Run(ctx, events, backendClient.Submit); err != nil && ctx.Err() == nil {
+	var actions ui.Actions
+	if interactive, ok := backendClient.(backend.Interactive); ok {
+		actions = ui.Actions{
+			ResolveApproval: interactive.ResolveApproval,
+			Interrupt:       interactive.Interrupt,
+		}
+	}
+	if err := ui.Run(ctx, events, backendClient.Submit, actions); err != nil && ctx.Err() == nil {
 		return err
 	}
 	stop()

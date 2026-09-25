@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -157,11 +158,227 @@ func TestTurnEventsUpdateStatus(t *testing.T) {
 		{ev: event.Event{Kind: "turn.started"}, want: "working"},
 		{ev: event.Event{Kind: "turn.completed", Data: map[string]any{"status": "completed"}}, want: "idle"},
 		{ev: event.Event{Kind: "turn.completed", Data: map[string]any{"status": "failed"}}, want: "error"},
+		{ev: event.Event{Kind: "turn.completed", Data: map[string]any{"status": "interrupted"}}, want: "interrupted"},
 	} {
 		updated, _ := m.Update(batchMsg{tt.ev})
 		m = updated.(model)
 		if m.status != tt.want {
 			t.Fatalf("status for %s = %q, want %q", tt.ev.Kind, m.status, tt.want)
 		}
+	}
+}
+
+func TestInterruptMarksActiveCommandsAndToolsComplete(t *testing.T) {
+	m := interactiveTestModel()
+	m.add(event.Event{Kind: "command.started", TurnID: "turn-1", ItemID: "cmd-1", Summary: "sleep 60"})
+	m.add(event.Event{Kind: "tool.started", TurnID: "turn-1", ItemID: "tool-1", Summary: "search"})
+	updated, _ := m.Update(batchMsg{{Kind: "turn.completed", TurnID: "turn-1", Data: map[string]any{"status": "interrupted"}}})
+	m = updated.(model)
+	if m.status != "interrupted" || m.turnActive {
+		t.Fatalf("interrupted turn state = %q active=%v", m.status, m.turnActive)
+	}
+	if m.events[0].Kind != "command.completed" || !strings.Contains(m.events[0].Summary, "interrupted") {
+		t.Fatalf("command after interrupt = %+v", m.events[0])
+	}
+	if m.events[1].Kind != "tool.completed" || !strings.Contains(m.events[1].Summary, "interrupted") {
+		t.Fatalf("tool after interrupt = %+v", m.events[1])
+	}
+}
+
+func TestApprovalTakesFocusAndAcceptsWithY(t *testing.T) {
+	var gotID string
+	var gotDecision event.ApprovalDecision
+	m := interactiveTestModel()
+	m.actions.ResolveApproval = func(_ context.Context, requestID string, decision event.ApprovalDecision) error {
+		gotID, gotDecision = requestID, decision
+		return nil
+	}
+	request := event.ApprovalRequest{RequestID: "approval-1", Kind: "command", Command: "rm -i cache.tmp", Reason: "outside workspace"}
+	updated, _ := m.Update(batchMsg{{Kind: "approval.requested", Summary: "Command execution approval requested", Approval: &request}})
+	m = updated.(model)
+	if m.focus != focusApproval || len(m.approvals) != 1 {
+		t.Fatalf("approval focus/state = %v/%+v", m.focus, m.approvals)
+	}
+	view := m.View()
+	for _, want := range []string{"APPROVAL REQUIRED", "rm -i cache.tmp", "outside workspace", "y/enter accept"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("approval prompt does not contain %q: %q", want, view)
+		}
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	if cmd == nil {
+		t.Fatal("y did not resolve the active approval")
+	}
+	msg := cmd()
+	if _, ok := msg.(approvalResultMsg); !ok {
+		t.Fatalf("approval command returned %T", msg)
+	}
+	m = updated.(model)
+	if gotID != "approval-1" || gotDecision != event.ApprovalAccept || !m.submitting[gotID] {
+		t.Fatalf("approval action = %q %q, submitting=%v", gotID, gotDecision, m.submitting)
+	}
+}
+
+func TestApprovalCanRejectWithNOrEscape(t *testing.T) {
+	for _, key := range []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune{'n'}},
+		{Type: tea.KeyEsc},
+	} {
+		var got event.ApprovalDecision
+		m := interactiveTestModel()
+		m.approvals = []event.ApprovalRequest{{RequestID: "approval-2", Kind: "file_change", FilePaths: []string{"main.go"}}}
+		m.focus = focusApproval
+		m.actions.ResolveApproval = func(_ context.Context, _ string, decision event.ApprovalDecision) error {
+			got = decision
+			return nil
+		}
+		_, cmd := m.Update(key)
+		if cmd == nil {
+			t.Fatalf("key %s did not schedule rejection", key.String())
+		}
+		cmd()
+		if got != event.ApprovalReject {
+			t.Fatalf("key %s decision = %q, want reject", key.String(), got)
+		}
+	}
+}
+
+func TestApprovalResolutionClearsPromptAndRestoresComposerFocus(t *testing.T) {
+	m := interactiveTestModel()
+	request := event.ApprovalRequest{RequestID: "approval-done", Kind: "file_change", FilePaths: []string{"main.go"}}
+	m.add(event.Event{Kind: "approval.requested", Approval: &request})
+	if m.focus != focusApproval || len(m.approvals) != 1 {
+		t.Fatal("approval request did not activate its prompt")
+	}
+	m.add(event.Event{
+		Kind: "approval.resolved", Approval: &event.ApprovalRequest{RequestID: request.RequestID},
+		Decision: event.ApprovalAccept,
+	})
+	if len(m.approvals) != 0 || m.focus != focusComposer || !m.input.Focused() {
+		t.Fatalf("resolved approval left stale focus/prompt: focus=%v approvals=%v", m.focus, m.approvals)
+	}
+}
+
+func TestKeyboardFocusSeparatesComposerFromTimelineAndApproval(t *testing.T) {
+	m := interactiveTestModel()
+	for i := range 12 {
+		m.add(event.Event{Kind: "user.message", Summary: strings.Repeat("row ", 8) + string(rune('a'+i))})
+	}
+	m.refresh(true)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(model)
+	if m.focus != focusTimeline || m.input.Focused() {
+		t.Fatalf("Tab did not move focus to timeline: focus=%v input=%v", m.focus, m.input.Focused())
+	}
+	m.viewport.GotoBottom()
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	m = updated.(model)
+	if m.viewport.AtBottom() {
+		t.Fatal("Up did not scroll the focused timeline")
+	}
+	request := event.ApprovalRequest{RequestID: "approval-focus", Kind: "permissions", Permissions: []string{"network"}}
+	updated, _ = m.Update(batchMsg{{Kind: "approval.requested", Approval: &request}})
+	m = updated.(model)
+	if m.focus != focusApproval || m.input.Focused() {
+		t.Fatal("approval request did not take keyboard focus")
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	m = updated.(model)
+	if m.input.Value() != "" {
+		t.Fatalf("approval shortcut leaked into composer: %q", m.input.Value())
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(model)
+	if m.focus != focusComposer || !m.input.Focused() {
+		t.Fatal("Tab from approval focus did not return to composer")
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	m = updated.(model)
+	if m.input.Value() != "y" {
+		t.Fatalf("composer did not receive ordinary text after focus changed: %q", m.input.Value())
+	}
+}
+
+func TestTimelineNavigationBindings(t *testing.T) {
+	m := interactiveTestModel()
+	m.viewport.Height = 3
+	m.focus = focusTimeline
+	for i := range 20 {
+		m.add(event.Event{Kind: "user.message", Summary: fmt.Sprintf("row %d", i)})
+	}
+	m.refresh(true)
+	for _, tt := range []struct {
+		name string
+		key  tea.KeyMsg
+		top  bool
+	}{
+		{name: "g goes to top", key: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}}, top: true},
+		{name: "end goes to bottom", key: tea.KeyMsg{Type: tea.KeyEnd}},
+		{name: "G goes to bottom", key: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'G'}}},
+		{name: "home goes to top", key: tea.KeyMsg{Type: tea.KeyHome}, top: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			updated, _ := m.Update(tt.key)
+			current := updated.(model)
+			if tt.top && current.viewport.YOffset != 0 {
+				t.Fatalf("YOffset = %d, want top", current.viewport.YOffset)
+			}
+			if !tt.top && !current.viewport.AtBottom() {
+				t.Fatalf("key %s did not move timeline to bottom", tt.key.String())
+			}
+		})
+	}
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	if updated.(model).viewport.AtBottom() {
+		t.Fatal("PageUp did not scroll up")
+	}
+	updated, _ = updated.(model).Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	if !updated.(model).viewport.AtBottom() {
+		t.Fatal("PageDown did not return to the bottom")
+	}
+}
+
+func TestCtrlXInterruptsAndCtrlCQuits(t *testing.T) {
+	interrupted := false
+	m := interactiveTestModel()
+	m.turnActive = true
+	m.status = "working"
+	m.actions.Interrupt = func(context.Context) error {
+		interrupted = true
+		return nil
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlX})
+	if cmd == nil || updated.(model).status != "interrupting" {
+		t.Fatal("Ctrl+X did not enter interrupting state")
+	}
+	cmd()
+	if !interrupted {
+		t.Fatal("Ctrl+X did not call the backend interrupt action")
+	}
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatal("Ctrl+C did not quit")
+	}
+	if updated.(model).turnActive != m.turnActive {
+		t.Fatal("Ctrl+C unexpectedly changed turn state")
+	}
+}
+
+func TestEscapeClearsComposerWithoutQuitting(t *testing.T) {
+	m := interactiveTestModel()
+	m.input.SetValue("draft")
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if cmd != nil || updated.(model).input.Value() != "" {
+		t.Fatal("Escape should clear the composer draft without quitting")
+	}
+}
+
+func interactiveTestModel() model {
+	input := textinput.New()
+	input.Focus()
+	return model{
+		input: input, ctx: context.Background(), status: "idle", focus: focusComposer,
+		submitting: make(map[string]bool), viewport: viewport.New(90, 12), ready: true,
+		width: 90, height: 20,
 	}
 }

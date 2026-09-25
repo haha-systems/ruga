@@ -17,10 +17,23 @@ Use `-codex /path/to/codex` to select a different Codex binary. Type a prompt
 and press Enter to start a turn. Assistant text streams into the timeline and
 the status line shows whether Codex is idle, working, or in an error state.
 Use the arrow and page keys to scroll; new events follow the bottom only while
-the timeline is already at the bottom. Press `Ctrl+C` or `Esc` to exit.
+the timeline is already at the bottom. Press `Ctrl+C` to exit.
 
 Timeline events are buffered and coalesced for display so terminal rendering
 does not block App Server event processing. Command starts, output, and exit
 state share one timeline entry; each command retains at most 4 KiB of output,
 with an omission count when more arrives. File changes, tool calls, reasoning
 and status updates, and token usage have distinct event labels in the timeline.
+
+## Interactive controls
+
+Codex command, file-change, permission, and MCP approval requests appear in a
+highlighted prompt above the timeline and take keyboard focus. Press `y` or
+`Enter` to accept, `n` or `Esc` to reject. Decisions are sent back to Codex and
+recorded in the timeline.
+
+`Tab` cycles focus between the composer, timeline, and an active approval.
+Timeline focus enables arrow and page scrolling, `g`/`Home` to jump to the top,
+and `G`/`End` to jump to the bottom. `Esc` returns from the timeline to the
+composer or clears a composer draft. `Ctrl+X` interrupts the active turn;
+`Ctrl+C` exits.
