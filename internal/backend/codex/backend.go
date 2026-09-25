@@ -18,14 +18,18 @@ import (
 )
 
 type Backend struct {
-	binary   string
-	cwd      string
-	mu       sync.Mutex
-	client   *codexgo.Client
-	thread   *codexgo.SessionThread
-	sub      *codexgo.EventSubscription
-	eventBus bus.Bus
-	busy     bool
+	binary             string
+	cwd                string
+	mu                 sync.Mutex
+	client             *codexgo.Client
+	thread             *codexgo.SessionThread
+	threadID           string
+	turnID             string
+	sub                *codexgo.EventSubscription
+	eventBus           bus.Bus
+	busy               bool
+	interruptRequested bool
+	pendingApprovals   map[string]chan event.ApprovalDecision
 }
 
 func New(binary, cwd string) *Backend { return &Backend{binary: binary, cwd: cwd} }
@@ -38,6 +42,7 @@ func (b *Backend) Start(ctx context.Context, eventBus bus.Bus) error {
 	client, err := codexgo.New(
 		codexgo.WithStdioProcess(path, "app-server", "--stdio"),
 		codexgo.WithProcessDir(b.cwd),
+		codexgo.WithRequestHandler(serverRequestHandler{backend: b}),
 	)
 	if err != nil {
 		return fmt.Errorf("connect to Codex App Server: %w", err)
@@ -67,7 +72,7 @@ func (b *Backend) Start(ctx context.Context, eventBus bus.Bus) error {
 		return fmt.Errorf("start Codex thread: %w", err)
 	}
 	b.mu.Lock()
-	b.thread = thread
+	b.thread, b.threadID = thread, thread.ID()
 	b.mu.Unlock()
 	return nil
 }
@@ -85,6 +90,14 @@ func (b *Backend) forward(ctx context.Context, sub *codexgo.EventSubscription, e
 			if ev.Kind == "turn.completed" || ev.Kind == "error" {
 				b.mu.Lock()
 				b.busy = false
+				b.turnID = ""
+				b.interruptRequested = false
+				b.mu.Unlock()
+			} else if ev.Kind == "turn.started" && ev.TurnID != "" {
+				b.mu.Lock()
+				if b.busy {
+					b.turnID = ev.TurnID
+				}
 				b.mu.Unlock()
 			}
 			if err := eventBus.Publish(ctx, ev); err != nil && ctx.Err() == nil {
@@ -108,8 +121,8 @@ func (b *Backend) Submit(ctx context.Context, prompt string) error {
 		return fmt.Errorf("Codex is still working on the current turn")
 	}
 	b.busy = true
-	client, thread, eventBus := b.client, b.thread, b.eventBus
-	threadID := thread.ID()
+	client, eventBus := b.client, b.eventBus
+	threadID := b.threadID
 	b.mu.Unlock()
 
 	if err := eventBus.Publish(ctx, event.Event{
@@ -120,7 +133,8 @@ func (b *Backend) Submit(ctx context.Context, prompt string) error {
 		b.setIdle()
 		return err
 	}
-	if _, err := client.TurnStart(ctx, codexgo.TurnStartRequest{ThreadID: threadID, Input: prompt}); err != nil {
+	turn, err := client.TurnStart(ctx, codexgo.TurnStartRequest{ThreadID: threadID, Input: prompt})
+	if err != nil {
 		b.setIdle()
 		_ = eventBus.Publish(ctx, event.Event{
 			ID: watermill.NewUUID(), Timestamp: time.Now(), Backend: "codex",
@@ -128,18 +142,164 @@ func (b *Backend) Submit(ctx context.Context, prompt string) error {
 		})
 		return err
 	}
+	b.mu.Lock()
+	if b.busy && turn.ID != "" {
+		b.turnID = turn.ID
+	}
+	interrupt := b.busy && b.interruptRequested
+	b.interruptRequested = false
+	b.mu.Unlock()
+	if interrupt {
+		return b.Interrupt(ctx)
+	}
 	return nil
+}
+
+func (b *Backend) Interrupt(ctx context.Context) error {
+	b.mu.Lock()
+	if !b.busy || b.client == nil || b.threadID == "" {
+		b.mu.Unlock()
+		return fmt.Errorf("no active turn to interrupt")
+	}
+	if b.turnID == "" {
+		b.interruptRequested = true
+		b.mu.Unlock()
+		return nil
+	}
+	client := b.client
+	threadID, turnID := b.threadID, b.turnID
+	b.mu.Unlock()
+	if err := client.TurnInterrupt(ctx, codexgo.TurnInterruptRequest{ThreadID: threadID, TurnID: turnID}); err != nil {
+		return err
+	}
+	b.rejectPendingApprovals()
+	return nil
+}
+
+func (b *Backend) rejectPendingApprovals() {
+	b.mu.Lock()
+	b.rejectPendingApprovalsLocked()
+	b.mu.Unlock()
+}
+
+func (b *Backend) rejectPendingApprovalsLocked() {
+	for requestID, pending := range b.pendingApprovals {
+		if b.eventBus != nil {
+			_ = b.eventBus.Publish(context.Background(), event.Event{
+				ID: watermill.NewUUID(), Timestamp: time.Now(), Backend: "app",
+				Kind: "approval.resolved", Summary: string(event.ApprovalReject),
+				Approval: &event.ApprovalRequest{RequestID: requestID}, Decision: event.ApprovalReject,
+			})
+		}
+		delete(b.pendingApprovals, requestID)
+		pending <- event.ApprovalReject
+	}
+}
+
+func (b *Backend) ResolveApproval(ctx context.Context, requestID string, decision event.ApprovalDecision) error {
+	if decision != event.ApprovalAccept && decision != event.ApprovalReject {
+		return fmt.Errorf("unsupported approval decision %q", decision)
+	}
+	b.mu.Lock()
+	pending := b.pendingApprovals[requestID]
+	if pending == nil {
+		b.mu.Unlock()
+		return fmt.Errorf("approval request %q is no longer pending", requestID)
+	}
+	resolved := event.Event{
+		ID: watermill.NewUUID(), Timestamp: time.Now(), Backend: "app",
+		Kind: "approval.resolved", Summary: string(decision),
+		Approval: &event.ApprovalRequest{RequestID: requestID}, Decision: decision,
+	}
+	if b.eventBus != nil {
+		if err := b.eventBus.Publish(ctx, resolved); err != nil {
+			b.mu.Unlock()
+			return err
+		}
+	}
+	delete(b.pendingApprovals, requestID)
+	pending <- decision
+	b.mu.Unlock()
+	return nil
+}
+
+func (b *Backend) requestApproval(ctx context.Context, approval event.ApprovalRequest) (event.ApprovalDecision, error) {
+	approval.RequestID = watermill.NewUUID()
+	decision := make(chan event.ApprovalDecision, 1)
+	b.mu.Lock()
+	if b.pendingApprovals == nil {
+		b.pendingApprovals = make(map[string]chan event.ApprovalDecision)
+	}
+	if b.eventBus == nil {
+		b.mu.Unlock()
+		return event.ApprovalReject, fmt.Errorf("event bus is not available for approval request")
+	}
+	b.pendingApprovals[approval.RequestID] = decision
+	eventBus := b.eventBus
+	b.mu.Unlock()
+
+	requested := event.Event{
+		ID: approval.RequestID, Timestamp: time.Now(), Backend: "codex",
+		Kind: "approval.requested", ThreadID: approval.ThreadID, TurnID: approval.TurnID,
+		ItemID: approval.ItemID, Summary: approvalSummary(approval), Approval: &approval,
+	}
+	if err := eventBus.Publish(ctx, requested); err != nil {
+		b.mu.Lock()
+		delete(b.pendingApprovals, approval.RequestID)
+		b.mu.Unlock()
+		return event.ApprovalReject, err
+	}
+	select {
+	case result := <-decision:
+		return result, nil
+	case <-ctx.Done():
+		select {
+		case result := <-decision:
+			return result, nil
+		default:
+		}
+		b.mu.Lock()
+		_, stillPending := b.pendingApprovals[approval.RequestID]
+		delete(b.pendingApprovals, approval.RequestID)
+		if stillPending && b.eventBus != nil {
+			_ = b.eventBus.Publish(context.Background(), event.Event{
+				ID: watermill.NewUUID(), Timestamp: time.Now(), Backend: "app",
+				Kind: "approval.resolved", Summary: "request canceled",
+				Approval: &event.ApprovalRequest{RequestID: approval.RequestID}, Decision: event.ApprovalReject,
+			})
+		}
+		b.mu.Unlock()
+		return event.ApprovalReject, ctx.Err()
+	}
+}
+
+func approvalSummary(approval event.ApprovalRequest) string {
+	switch approval.Kind {
+	case "command":
+		return "Command execution approval requested"
+	case "file_change":
+		return "File change approval requested"
+	case "permissions":
+		return "Permissions approval requested"
+	case "mcp_tool":
+		return "MCP tool approval requested"
+	default:
+		return "Approval requested"
+	}
 }
 
 func (b *Backend) setIdle() {
 	b.mu.Lock()
 	b.busy = false
+	b.turnID = ""
+	b.interruptRequested = false
 	b.mu.Unlock()
 }
 
 func (b *Backend) Close() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.rejectPendingApprovalsLocked()
 	if b.sub != nil {
 		b.sub.Close()
 		b.sub = nil
@@ -148,6 +308,7 @@ func (b *Backend) Close() error {
 		b.thread.Close()
 		b.thread = nil
 	}
+	b.threadID, b.turnID = "", ""
 	if b.client != nil {
 		err := b.client.Close()
 		b.client = nil
