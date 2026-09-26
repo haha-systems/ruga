@@ -133,6 +133,115 @@ func TestBackendOmitsParallelToolCallsWithoutTools(t *testing.T) {
 	}
 }
 
+func TestBackendPublishesUsageFromStream(t *testing.T) {
+	var request completionRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"done\"}}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":120,\"completion_tokens\":30,\"total_tokens\":150}}\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+	client := New(Config{BaseURL: server.URL + "/v1", Model: "test-model"})
+	events := &captureBus{}
+	if err := client.Start(context.Background(), events); err != nil {
+		t.Fatalf("Start(): %v", err)
+	}
+
+	if err := client.Submit(context.Background(), "hi"); err != nil {
+		t.Fatalf("Submit(): %v", err)
+	}
+
+	_ = client.Close()
+	if request.StreamOptions == nil || !request.StreamOptions.IncludeUsage {
+		t.Fatalf("stream_options = %+v, want include_usage", request.StreamOptions)
+	}
+
+	var usageEvents []event.Event
+	for _, ev := range events.snapshot() {
+		if ev.Kind == "usage.updated" {
+			usageEvents = append(usageEvents, ev)
+		}
+	}
+
+	if len(usageEvents) != 1 {
+		t.Fatalf("usage events = %+v, want exactly one usage.updated", usageEvents)
+	}
+
+	got := usageEvents[0]
+	if got.Summary != "120 in · 30 out · 150 total tokens" {
+		t.Fatalf("usage summary = %q", got.Summary)
+	}
+
+	if got.Data["input_tokens"] != 120 || got.Data["output_tokens"] != 30 || got.Data["total_tokens"] != 150 {
+		t.Fatalf("usage data = %+v", got.Data)
+	}
+
+	if got.TurnID == "" || got.Backend != "openai" {
+		t.Fatalf("usage event metadata = %+v", got)
+	}
+}
+
+func TestBackendDerivesUsageTotalWhenAbsent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"done\"}}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":5}}\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+	client := New(Config{BaseURL: server.URL + "/v1", Model: "test-model"})
+	events := &captureBus{}
+	if err := client.Start(context.Background(), events); err != nil {
+		t.Fatalf("Start(): %v", err)
+	}
+
+	if err := client.Submit(context.Background(), "hi"); err != nil {
+		t.Fatalf("Submit(): %v", err)
+	}
+
+	_ = client.Close()
+	var usageEvents []event.Event
+	for _, ev := range events.snapshot() {
+		if ev.Kind == "usage.updated" {
+			usageEvents = append(usageEvents, ev)
+		}
+	}
+
+	if len(usageEvents) != 1 || usageEvents[0].Data["total_tokens"] != 12 {
+		t.Fatalf("derived usage = %+v", usageEvents)
+	}
+}
+
+func TestBackendOmitsUsageWhenServerReportsNone(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+	client := New(Config{BaseURL: server.URL + "/v1", Model: "test-model"})
+	events := &captureBus{}
+	if err := client.Start(context.Background(), events); err != nil {
+		t.Fatalf("Start(): %v", err)
+	}
+
+	if err := client.Submit(context.Background(), "hi"); err != nil {
+		t.Fatalf("Submit(): %v", err)
+	}
+
+	_ = client.Close()
+	for _, ev := range events.snapshot() {
+		if ev.Kind == "usage.updated" {
+			t.Fatalf("unexpected usage.updated without server usage: %+v", ev)
+		}
+	}
+}
+
 func TestBackendPublishesHTTPFailure(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, `{"error":"invalid model"}`, http.StatusBadRequest)

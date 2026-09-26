@@ -18,6 +18,13 @@ type completionRequest struct {
 	Stream            bool             `json:"stream"`
 	Tools             []toolDefinition `json:"tools,omitempty"`
 	ParallelToolCalls *bool            `json:"parallel_tool_calls,omitempty"`
+	StreamOptions     *streamOptions   `json:"stream_options,omitempty"`
+}
+
+// streamOptions asks compatible servers to report token usage on the final
+// streamed chunk, which otherwise carries no usage object.
+type streamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 type toolCall struct {
@@ -51,9 +58,18 @@ type completionChunk struct {
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
+	Usage *usage `json:"usage"`
 	Error *struct {
 		Message string `json:"message"`
 	} `json:"error"`
+}
+
+// usage is the OpenAI-compatible token accounting block. Total may be absent on
+// some servers, so callers derive it when zero.
+type usage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
 }
 
 type toolCallDelta struct {

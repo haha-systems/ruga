@@ -212,7 +212,10 @@ func (b *Backend) Submit(ctx context.Context, prompt string) error {
 	toolCallCount, toolResultBytes := 0, 0
 	var toolDuration, toolWallDuration time.Duration
 	for round := 0; round <= maxToolRounds; round++ {
-		request := completionRequest{Model: b.model, Messages: conversation, Stream: true}
+		request := completionRequest{
+			Model: b.model, Messages: conversation, Stream: true,
+			StreamOptions: &streamOptions{IncludeUsage: true},
+		}
 		b.mu.Lock()
 		registry := b.tools
 		b.mu.Unlock()
@@ -242,6 +245,12 @@ func (b *Backend) Submit(ctx context.Context, prompt string) error {
 
 		if len(response.ToolCalls) > 0 && round >= maxToolRounds {
 			return b.failTurn(ctx, eventBus, threadID, turnID, fmt.Errorf("OpenAI-compatible tool loop exceeded %d rounds", maxToolRounds))
+		}
+
+		if response.Usage != nil {
+			if err := publishUsage(ctx, eventBus, threadID, turnID, response.Usage); err != nil {
+				return err
+			}
 		}
 
 		toolCallCount += len(response.ToolCalls)
@@ -350,6 +359,7 @@ func (b *Backend) stream(ctx context.Context, eventBus bus.Bus, threadID, turnID
 
 	var answer strings.Builder
 	toolCalls := make(map[int]*toolCall)
+	var streamedUsage *usage
 	messageStarted := false
 	scanner := bufio.NewScanner(response.Body)
 	scanner.Buffer(make([]byte, 4096), 1024*1024)
@@ -372,6 +382,10 @@ func (b *Backend) stream(ctx context.Context, eventBus bus.Bus, threadID, turnID
 
 		if chunk.Error != nil {
 			return fmt.Errorf("OpenAI-compatible stream error: %s", chunk.Error.Message)
+		}
+
+		if chunk.Usage != nil {
+			streamedUsage = chunk.Usage
 		}
 
 		for _, choice := range chunk.Choices {
@@ -448,7 +462,7 @@ func (b *Backend) stream(ctx context.Context, eventBus bus.Bus, threadID, turnID
 	}
 
 	sort.Ints(indices)
-	responseMessage := assistantResponse{Content: answer.String()}
+	responseMessage := assistantResponse{Content: answer.String(), Usage: streamedUsage}
 	for _, index := range indices {
 		call := toolCalls[index]
 		if call.ID == "" || call.FunctionCall.Name == "" {
@@ -468,6 +482,7 @@ func (b *Backend) stream(ctx context.Context, eventBus bus.Bus, threadID, turnID
 type assistantResponse struct {
 	Content   string
 	ToolCalls []toolCall
+	Usage     *usage
 }
 
 func (b *Backend) persistMessages(messages ...session.Message) error {
@@ -524,6 +539,25 @@ func executeToolCalls(ctx context.Context, registry *tool.Registry, calls []tool
 	}
 
 	return results
+}
+
+func publishUsage(ctx context.Context, eventBus bus.Bus, threadID, turnID string, reported *usage) error {
+	total := reported.TotalTokens
+	if total == 0 {
+		total = reported.PromptTokens + reported.CompletionTokens
+	}
+
+	raw, _ := json.Marshal(reported)
+	return publishTo(ctx, eventBus, event.Event{
+		Backend: "openai", Kind: "usage.updated", ThreadID: threadID, TurnID: turnID,
+		Source:  "chat.completion.chunk",
+		Summary: fmt.Sprintf("%d in · %d out · %d total tokens", reported.PromptTokens, reported.CompletionTokens, total),
+		Data: map[string]any{
+			"input_tokens":  reported.PromptTokens,
+			"output_tokens": reported.CompletionTokens,
+			"total_tokens":  total,
+		}, Raw: raw,
+	})
 }
 
 func publishToolStarted(ctx context.Context, eventBus bus.Bus, threadID, turnID string, call tool.Call) error {
