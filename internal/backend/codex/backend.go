@@ -14,6 +14,7 @@ import (
 	"github.com/ThreeDotsLabs/watermill"
 	"github.com/haha-systems/ruga/internal/bus"
 	"github.com/haha-systems/ruga/internal/event"
+	"github.com/haha-systems/ruga/internal/session"
 	codexgo "github.com/zealbase/codex-app-server-go"
 )
 
@@ -31,6 +32,9 @@ type Backend struct {
 	busy               bool
 	interruptRequested bool
 	pendingApprovals   map[string]chan event.ApprovalDecision
+	state              session.Session
+	save               func(session.Session) error
+	resuming           bool
 }
 
 func New(binary, cwd string) *Backend { return &Backend{binary: binary, cwd: cwd} }
@@ -77,7 +81,15 @@ func (b *Backend) Start(ctx context.Context, eventBus bus.Bus) error {
 	// Drain the SDK subscription independently from the UI and bus dispatcher.
 	go b.forward(ctx, sub, eventBus)
 
-	thread, err := client.StartThread(ctx, codexgo.WithThreadCWD(b.cwd))
+	b.mu.Lock()
+	state, resume, saved := b.state, b.resuming, b.save
+	b.mu.Unlock()
+	var thread *codexgo.SessionThread
+	if resume {
+		thread, err = client.ResumeThread(ctx, state.BackendSession, codexgo.WithThreadCWD(b.cwd))
+	} else {
+		thread, err = client.StartThread(ctx, codexgo.WithThreadCWD(b.cwd))
+	}
 	if err != nil {
 		_ = eventBus.Publish(ctx, event.Event{
 			ID: watermill.NewUUID(), Timestamp: time.Now(), Backend: "codex",
@@ -87,8 +99,40 @@ func (b *Backend) Start(ctx context.Context, eventBus bus.Bus) error {
 	}
 	b.mu.Lock()
 	b.thread, b.threadID = thread, thread.ID()
+	b.state.BackendSession = thread.ID()
+	b.state.UpdatedAt = time.Now().UTC()
+	state = b.state
 	b.mu.Unlock()
+	if saved != nil {
+		if err := saved(state); err != nil {
+			_ = b.Close()
+			return fmt.Errorf("persist Codex thread identity: %w", err)
+		}
+	}
+	if resume {
+		summary := "↻ resumed Codex session"
+		if cwd := session.ShortPath(state.CWD); cwd != "" {
+			summary += " · " + cwd
+		}
+		if err := eventBus.Publish(ctx, event.Event{
+			ID: watermill.NewUUID(), Timestamp: time.Now(), Backend: "codex", ThreadID: thread.ID(),
+			Kind: "session.resumed", Summary: summary,
+		}); err != nil {
+			_ = b.Close()
+			return err
+		}
+	}
 	return nil
+}
+
+func (b *Backend) ConfigureSession(state session.Session, resuming bool, save func(session.Session) error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.state, b.save = state, save
+	b.resuming = resuming
+	if state.CWD != "" {
+		b.cwd = state.CWD
+	}
 }
 
 func (b *Backend) ModelName() string {

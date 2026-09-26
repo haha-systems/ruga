@@ -43,6 +43,40 @@ go run ./cmd/harness -backend openai
 Use `-openai-base-url` and `-openai-model` to select a compatible endpoint and
 model. The key environment variable can be changed with `-openai-api-key-env`.
 
+## Resuming sessions
+
+Ruga prints a session ID when a new session starts. Resume the most recent
+session for the current directory and backend with `--resume`, or choose an
+older session by ID:
+
+```sh
+go run ./cmd/harness --resume
+go run ./cmd/harness resume <session-id>
+```
+
+Session state is stored separately from event recordings under
+`$XDG_STATE_HOME/ruga/sessions` (or `~/.local/state/ruga/sessions`). Codex
+sessions resume their native App Server thread. OpenAI-compatible sessions
+restore their conversation, endpoint, model, and credential environment
+variable name; API keys themselves are never saved.
+
+## OpenAI-compatible coding tools
+
+The OpenAI-compatible backend exposes a small set of local coding tools:
+
+- `echo` returns the supplied text unchanged.
+- `read` returns a bounded line range from one file.
+- `search` finds literal text and returns bounded matching lines.
+- `list` lists a shallow, bounded set of files and directories.
+- `patch` applies a standard multi-file unified diff.
+- `write` creates or replaces a complete file.
+- `exec` runs a shell command in the repository and returns bounded output.
+
+File paths stay within the repository, and reads, searches, and all tool
+results are bounded. `search` requires the ripgrep (`rg`) command, and `patch`
+requires the system `patch` utility. `exec` runs in the repository with a
+30-second default timeout, a 120-second maximum, and bounded output.
+
 ## Interactive controls
 
 Codex command, file-change, permission, and MCP approval requests appear in a

@@ -5,6 +5,8 @@ import (
 
 	"github.com/haha-systems/ruga/internal/bus"
 	"github.com/haha-systems/ruga/internal/event"
+	"github.com/haha-systems/ruga/internal/session"
+	"github.com/haha-systems/ruga/internal/tool"
 )
 
 // Backend starts a provider session and publishes normalized activity.
@@ -25,4 +27,16 @@ type Interactive interface {
 // It is optional so providers without model metadata remain usable.
 type ModelDisplay interface {
 	ModelName() string
+}
+
+// SessionSupport is optional because backend continuation state differs by
+// provider. The callback is the application's durable session store.
+type SessionSupport interface {
+	ConfigureSession(session.Session, bool, func(session.Session) error)
+}
+
+// ToolSupport exposes Ruga's registered tools to backends that can execute
+// provider tool calls.
+type ToolSupport interface {
+	ConfigureTools(*tool.Registry)
 }

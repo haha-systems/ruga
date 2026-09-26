@@ -18,13 +18,24 @@ import (
 	openaibackend "github.com/haha-systems/ruga/internal/backend/openai"
 	"github.com/haha-systems/ruga/internal/bus"
 	"github.com/haha-systems/ruga/internal/recording"
+	"github.com/haha-systems/ruga/internal/session"
+	"github.com/haha-systems/ruga/internal/tool"
 	"github.com/haha-systems/ruga/internal/ui"
 )
 
 func main() {
+	var resumeID string
+	args := os.Args[1:]
+	if len(args) > 0 && args[0] == "resume" {
+		if len(args) < 2 {
+			fatal(fmt.Errorf("usage: ruga resume <session> [flags]"))
+		}
+		resumeID = args[1]
+		args = args[2:]
+	}
 	if len(os.Args) > 1 && os.Args[1] == "replay" {
 		if len(os.Args) != 3 {
-			fatal(fmt.Errorf("usage: harness replay <session>"))
+			fatal(fmt.Errorf("usage: ruga replay <session>"))
 		}
 		if err := replay(os.Args[2]); err != nil {
 			fatal(err)
@@ -33,17 +44,32 @@ func main() {
 	}
 
 	var options backendOptions
-	flags := flag.NewFlagSet("harness", flag.ContinueOnError)
-	flags.StringVar(&options.name, "backend", "codex", "backend to use: codex or openai")
+	flags := flag.NewFlagSet("ruga", flag.ContinueOnError)
+	flags.StringVar(&options.name, "backend", "", "backend to use: codex or openai")
 	flags.StringVar(&options.codexBinary, "codex", "codex", "path to the Codex CLI binary")
 	flags.StringVar(&options.openAIBaseURL, "openai-base-url", "https://api.openai.com/v1", "OpenAI-compatible API base URL")
 	flags.StringVar(&options.openAIModel, "openai-model", "gpt-5.4-mini", "model for the OpenAI-compatible backend")
 	flags.StringVar(&options.openAIKeyEnv, "openai-api-key-env", "OPENAI_API_KEY", "environment variable containing the OpenAI-compatible API key")
-	if err := flags.Parse(os.Args[1:]); err != nil {
+	flags.BoolVar(&options.resumeLatest, "resume", false, "resume the most recent session for this directory")
+	options.resumeID = resumeID
+	if err := flags.Parse(args); err != nil {
 		fatal(err)
 	}
+	flags.Visit(func(value *flag.Flag) {
+		switch value.Name {
+		case "openai-base-url":
+			options.openAIBaseURLSet = true
+		case "openai-model":
+			options.openAIModelSet = true
+		case "openai-api-key-env":
+			options.openAIKeyEnvSet = true
+		}
+	})
 	if flags.NArg() != 0 {
 		fatal(fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " ")))
+	}
+	if options.resumeLatest && options.resumeID != "" {
+		fatal(fmt.Errorf("choose either --resume or resume <session>"))
 	}
 	if err := run(options); err != nil {
 		fatal(err)
@@ -51,11 +77,16 @@ func main() {
 }
 
 type backendOptions struct {
-	name          string
-	codexBinary   string
-	openAIBaseURL string
-	openAIModel   string
-	openAIKeyEnv  string
+	name             string
+	codexBinary      string
+	openAIBaseURL    string
+	openAIModel      string
+	openAIKeyEnv     string
+	resumeLatest     bool
+	resumeID         string
+	openAIBaseURLSet bool
+	openAIModelSet   bool
+	openAIKeyEnvSet  bool
 }
 
 func run(options backendOptions) (resultErr error) {
@@ -79,6 +110,23 @@ func run(options backendOptions) (resultErr error) {
 	if err != nil {
 		return err
 	}
+	stateDir, err := session.DefaultDir()
+	if err != nil {
+		return err
+	}
+	store := session.NewStore(stateDir)
+	state, resuming, err := resolveSession(store, options, workingDir)
+	if err != nil {
+		return err
+	}
+	backendName := state.Backend
+	applySessionBackendOptions(&options, state, resuming)
+	if state.CWD != "" {
+		workingDir = state.CWD
+	}
+	if err := store.Save(state); err != nil {
+		return fmt.Errorf("initialize session state: %w", err)
+	}
 	recordingDir, err := recording.DefaultDir()
 	if err != nil {
 		return err
@@ -96,9 +144,35 @@ func run(options backendOptions) (resultErr error) {
 			resultErr = errors.Join(resultErr, err)
 		}
 	}()
+	options.name = backendName
 	backendClient, err := newBackend(options, workingDir, os.Getenv)
 	if err != nil {
 		return err
+	}
+	sessionBackend, ok := backendClient.(backend.SessionSupport)
+	if !ok {
+		return fmt.Errorf("backend %q does not support durable sessions", backendName)
+	}
+	sessionBackend.ConfigureSession(state, resuming, store.Save)
+	registry, err := tool.NewRegistry(
+		tool.Echo{},
+		tool.ReadFile{Root: workingDir},
+		tool.Search{Root: workingDir},
+		tool.List{Root: workingDir},
+		tool.Patch{Root: workingDir},
+		tool.WriteFile{Root: workingDir},
+		tool.Exec{Root: workingDir},
+	)
+	if err != nil {
+		return fmt.Errorf("initialize tool registry: %w", err)
+	}
+	if toolBackend, ok := backendClient.(backend.ToolSupport); ok {
+		toolBackend.ConfigureTools(registry)
+	}
+	if resuming {
+		fmt.Fprintf(os.Stderr, "Resuming session: %s\n", state.ID)
+	} else {
+		fmt.Fprintf(os.Stderr, "Session ID: %s (resume with: ruga resume %s)\n", state.ID, state.ID)
 	}
 
 	if err := backendClient.Start(ctx, eventBus); err != nil {
@@ -119,7 +193,7 @@ func run(options backendOptions) (resultErr error) {
 		modelName = display.ModelName()
 	}
 	backendDisplay := "Codex"
-	if options.name == "openai" {
+	if backendName == "openai" {
 		backendDisplay = "OpenAI-compatible"
 	}
 	uiErr := ui.Run(ctx, events, backendClient.Submit, actions, ui.Config{
@@ -132,15 +206,56 @@ func run(options backendOptions) (resultErr error) {
 	return stopBackendErr
 }
 
+func applySessionBackendOptions(options *backendOptions, state session.Session, resuming bool) {
+	if !resuming || state.Backend != "openai" {
+		return
+	}
+	if !options.openAIBaseURLSet && state.Provider != "" {
+		options.openAIBaseURL = state.Provider
+	}
+	if !options.openAIModelSet && state.Model != "" {
+		options.openAIModel = state.Model
+	}
+	if !options.openAIKeyEnvSet && state.CredentialEnv != "" {
+		options.openAIKeyEnv = state.CredentialEnv
+	}
+}
+
+func resolveSession(store *session.Store, options backendOptions, cwd string) (session.Session, bool, error) {
+	backendName := options.name
+	if backendName == "" {
+		backendName = "codex"
+	}
+	var state session.Session
+	var err error
+	switch {
+	case options.resumeID != "":
+		state, err = store.Load(options.resumeID)
+		if err == nil && options.name != "" && state.Backend != options.name {
+			err = fmt.Errorf("session %q uses backend %q, not %q", state.ID, state.Backend, options.name)
+		}
+	case options.resumeLatest:
+		state, err = store.Latest(backendName, cwd)
+	}
+	if err != nil {
+		return session.Session{}, false, err
+	}
+	if state.ID != "" {
+		return state, true, nil
+	}
+	return session.New(backendName, cwd), false, nil
+}
+
 func newBackend(options backendOptions, workingDir string, lookupEnv func(string) string) (backend.Backend, error) {
 	switch options.name {
 	case "", "codex":
 		return codex.New(options.codexBinary, workingDir), nil
 	case "openai":
 		return openaibackend.New(openaibackend.Config{
-			BaseURL: options.openAIBaseURL,
-			Model:   options.openAIModel,
-			APIKey:  lookupEnv(options.openAIKeyEnv),
+			BaseURL:   options.openAIBaseURL,
+			Model:     options.openAIModel,
+			APIKey:    lookupEnv(options.openAIKeyEnv),
+			APIKeyEnv: options.openAIKeyEnv,
 		}), nil
 	default:
 		return nil, fmt.Errorf("unknown backend %q (choose codex or openai)", options.name)
