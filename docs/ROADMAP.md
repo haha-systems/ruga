@@ -151,13 +151,15 @@ results travel together, or the whole group is replaced by a summary.
   conservative default.
 - Providers with prompt caching reward a stable prefix; compact rarely and in
   large steps rather than trimming every turn.
-- PRD-2 covers measurement and tool-result narrowing but not window management;
-  this is a genuine new domain concept and warrants a PRD note before code.
+- PRD-2 now covers window management in §9 (Context Management): accounting,
+  the turn-as-unit rule, the sliding-window strategy, the stable-prefix
+  constraint, and the state/resume requirements. Design is settled; §2 is ready
+  to implement against that contract.
 
 ### Trigger
 
-Unblocked: usage accounting has landed. Still needs a PRD note before code, and
-its `usage.updated` signal is shared with §4 and §14.
+Unblocked: usage accounting has landed and PRD-2 §9 specifies the design. The
+`usage.updated` signal is shared with §4 and §14.
 
 ---
 
