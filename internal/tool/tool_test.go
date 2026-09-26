@@ -136,6 +136,76 @@ func TestRegistryBoundsResultsAndReportsUnknownTools(t *testing.T) {
 	}
 }
 
+type blockingMutationTool struct {
+	name    string
+	started chan string
+	release <-chan struct{}
+}
+
+func (t blockingMutationTool) Name() string { return t.name }
+func (blockingMutationTool) Schema() ToolSchema {
+	return ToolSchema{Type: "object", AdditionalProperties: false}
+}
+
+func (t blockingMutationTool) Execute(context.Context, json.RawMessage) ToolResult {
+	t.started <- t.name
+	<-t.release
+	return ToolResult{Content: t.name}
+}
+
+func TestRegistrySegmentsMixedBatchesAroundMutations(t *testing.T) {
+	started := make(chan string, 4)
+	mutationRelease := make(chan struct{})
+	readRelease := make(chan struct{})
+	registry, err := NewRegistry(
+		blockingMutationTool{name: "write", started: started, release: mutationRelease},
+		parallelTestTool{name: "read-a", started: started, release: readRelease},
+		parallelTestTool{name: "read-b", started: started, release: readRelease},
+	)
+	if err != nil {
+		t.Fatalf("NewRegistry(): %v", err)
+	}
+
+	done := make(chan []Execution, 1)
+	go func() {
+		done <- registry.Execute(context.Background(), []Call{
+			{ID: "1", Name: "write"},
+			{ID: "2", Name: "read-a"},
+			{ID: "3", Name: "read-b"},
+		})
+	}()
+
+	if got := <-started; got != "write" {
+		t.Fatalf("first started tool = %q, want the mutation", got)
+	}
+
+	// The reads must not overtake the mutation ahead of them.
+	select {
+	case got := <-started:
+		t.Fatalf("read %q started before the mutation completed", got)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	close(mutationRelease)
+
+	// Both trailing reads may now start concurrently.
+	seen := map[string]bool{}
+	for range 2 {
+		select {
+		case name := <-started:
+			seen[name] = true
+		case <-time.After(time.Second):
+			t.Fatalf("trailing reads did not start concurrently: %v", seen)
+		}
+	}
+
+	close(readRelease)
+	results := <-done
+	if len(results) != 3 || results[0].Call.Name != "write" || results[1].Result.Content != "read-a" || results[2].Result.Content != "read-b" {
+		t.Fatalf("segmented results = %+v", results)
+	}
+}
+
 type fixedResultTool struct{ content string }
 
 func (fixedResultTool) Name() string { return "fixed" }

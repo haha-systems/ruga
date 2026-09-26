@@ -13,10 +13,11 @@ type message struct {
 }
 
 type completionRequest struct {
-	Model    string           `json:"model"`
-	Messages []message        `json:"messages"`
-	Stream   bool             `json:"stream"`
-	Tools    []toolDefinition `json:"tools,omitempty"`
+	Model             string           `json:"model"`
+	Messages          []message        `json:"messages"`
+	Stream            bool             `json:"stream"`
+	Tools             []toolDefinition `json:"tools,omitempty"`
+	ParallelToolCalls *bool            `json:"parallel_tool_calls,omitempty"`
 }
 
 type toolCall struct {

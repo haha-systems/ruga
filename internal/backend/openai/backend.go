@@ -25,8 +25,14 @@ import (
 
 const (
 	defaultBaseURL = "https://api.openai.com/v1"
-	maxToolRounds  = 16
+	maxToolRounds  = 64
 )
+
+// parallelToolInstruction nudges compatible servers toward issuing independent
+// tool calls together, since many default to one call per round trip.
+const parallelToolInstruction = "You may request several tool calls in one response. " +
+	"Issue independent tool calls together instead of one per turn; " +
+	"only serialize calls when a later call depends on an earlier result."
 
 // Config contains connection settings for an OpenAI-compatible endpoint.
 type Config struct {
@@ -204,7 +210,7 @@ func (b *Backend) Submit(ctx context.Context, prompt string) error {
 
 	turnStarted := time.Now()
 	toolCallCount, toolResultBytes := 0, 0
-	var toolDuration time.Duration
+	var toolDuration, toolWallDuration time.Duration
 	for round := 0; round <= maxToolRounds; round++ {
 		request := completionRequest{Model: b.model, Messages: conversation, Stream: true}
 		b.mu.Lock()
@@ -220,6 +226,12 @@ func (b *Backend) Submit(ctx context.Context, prompt string) error {
 						Name: definition.Name, Description: definition.Schema.Description, Parameters: schema,
 					},
 				})
+			}
+
+			if len(request.Tools) > 0 {
+				parallel := true
+				request.ParallelToolCalls = &parallel
+				request.Messages = append([]message{{Role: "system", Content: parallelToolInstruction}}, conversation...)
 			}
 		}
 
@@ -259,6 +271,7 @@ func (b *Backend) Submit(ctx context.Context, prompt string) error {
 					"status": "completed", "tool_calls": toolCallCount, "tool_result_bytes": toolResultBytes,
 					"tool_result_tokens_estimate": (toolResultBytes + 3) / 4,
 					"tool_elapsed_ms":             toolDuration.Milliseconds(),
+					"tool_wall_elapsed_ms":        toolWallDuration.Milliseconds(),
 					"model_round_trips":           round + 1, "elapsed_ms": time.Since(turnStarted).Milliseconds(),
 				},
 			}); err != nil {
@@ -285,7 +298,9 @@ func (b *Backend) Submit(ctx context.Context, prompt string) error {
 			}
 		}
 
+		batchStarted := time.Now()
 		results := executeToolCalls(ctx, registry, calls)
+		toolWallDuration += time.Since(batchStarted)
 		for _, result := range results {
 			toolDuration += result.Duration
 			toolResultBytes += len(result.Result.Content)

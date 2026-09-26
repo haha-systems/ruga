@@ -102,6 +102,37 @@ func TestBackendStreamsNormalizedEventsAndKeepsConversation(t *testing.T) {
 	_ = client.Close()
 }
 
+func TestBackendOmitsParallelToolCallsWithoutTools(t *testing.T) {
+	var request completionRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+	client := New(Config{BaseURL: server.URL + "/v1", Model: "test-model"})
+	if err := client.Start(context.Background(), &captureBus{}); err != nil {
+		t.Fatalf("Start(): %v", err)
+	}
+
+	if err := client.Submit(context.Background(), "hello"); err != nil {
+		t.Fatalf("Submit(): %v", err)
+	}
+
+	_ = client.Close()
+	if request.ParallelToolCalls != nil {
+		t.Fatalf("parallel_tool_calls = %v, want omitted without tools", *request.ParallelToolCalls)
+	}
+
+	if len(request.Messages) != 1 || request.Messages[0].Role != "user" {
+		t.Fatalf("messages = %+v, want no system instruction without tools", request.Messages)
+	}
+}
+
 func TestBackendPublishesHTTPFailure(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, `{"error":"invalid model"}`, http.StatusBadRequest)
@@ -241,24 +272,32 @@ func TestBackendStreamsExecutesAndPersistsMultipleToolCalls(t *testing.T) {
 			return
 		}
 
-		if len(requests) == 2 && len(request.Messages) != 4 {
-			t.Errorf("follow-up messages = %+v, want user + assistant calls + 2 results", request.Messages)
+		if request.ParallelToolCalls == nil || !*request.ParallelToolCalls {
+			t.Errorf("parallel_tool_calls = %v, want true when tools are offered", request.ParallelToolCalls)
+		}
+
+		if len(request.Messages) == 0 || request.Messages[0].Role != "system" || !strings.Contains(request.Messages[0].Content, "tool calls") {
+			t.Errorf("system instruction = %+v, want tool batching guidance", request.Messages)
+		}
+
+		if len(requests) == 2 && len(request.Messages) != 5 {
+			t.Errorf("follow-up messages = %+v, want system + user + assistant calls + 2 results", request.Messages)
 		} else if len(requests) == 2 {
-			assistant := request.Messages[1]
+			assistant := request.Messages[2]
 			if len(assistant.ToolCalls) != 2 || assistant.ToolCalls[0].ID != "call-A" || assistant.ToolCalls[1].ID != "call-B" {
 				t.Errorf("assistant tool calls = %+v", assistant.ToolCalls)
 			}
 
-			if request.Messages[2].Role != "tool" || request.Messages[2].ToolCallID != "call-A" || request.Messages[2].Content != "one" {
-				t.Errorf("first tool result = %+v", request.Messages[2])
+			if request.Messages[3].Role != "tool" || request.Messages[3].ToolCallID != "call-A" || request.Messages[3].Content != "one" {
+				t.Errorf("first tool result = %+v", request.Messages[3])
 			}
 
-			if request.Messages[3].Role != "tool" || request.Messages[3].ToolCallID != "call-B" || request.Messages[3].Content != "two" {
-				t.Errorf("second tool result = %+v", request.Messages[3])
+			if request.Messages[4].Role != "tool" || request.Messages[4].ToolCallID != "call-B" || request.Messages[4].Content != "two" {
+				t.Errorf("second tool result = %+v", request.Messages[4])
 			}
-		} else if len(request.Messages) != 6 {
-			t.Errorf("resumed message count = %d, want 6: %+v", len(request.Messages), request.Messages)
-		} else if len(request.Messages[1].ToolCalls) != 2 || request.Messages[1].ToolCalls[0].ID != "call-A" || request.Messages[2].ToolCallID != "call-A" || request.Messages[3].ToolCallID != "call-B" || request.Messages[4].Content != "done" || request.Messages[5].Content != "continue after restart" {
+		} else if len(request.Messages) != 7 {
+			t.Errorf("resumed message count = %d, want 7: %+v", len(request.Messages), request.Messages)
+		} else if len(request.Messages[2].ToolCalls) != 2 || request.Messages[2].ToolCalls[0].ID != "call-A" || request.Messages[3].ToolCallID != "call-A" || request.Messages[4].ToolCallID != "call-B" || request.Messages[5].Content != "done" || request.Messages[6].Content != "continue after restart" {
 			t.Errorf("resumed messages did not reconstruct the tool transcript: %+v", request.Messages)
 		}
 

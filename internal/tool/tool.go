@@ -121,19 +121,15 @@ func (r *Registry) Definitions() []Definition {
 	return definitions
 }
 
-// Execute runs a batch concurrently only when every resolved tool explicitly
-// declares itself read-only. Results always match the original call order.
+// Execute runs each contiguous run of read-only calls concurrently and
+// serializes every other call in place. Results always match the original call
+// order, and a read that follows a mutation never overtakes it.
 func (r *Registry) Execute(ctx context.Context, calls []Call) []Execution {
 	results := make([]Execution, len(calls))
 	registered := make([]Tool, len(calls))
-	parallel := len(calls) > 1
 	r.mu.RLock()
 	for i, call := range calls {
 		registered[i] = r.tools[call.Name]
-		readOnly, ok := registered[i].(ReadOnly)
-		if !ok || !readOnly.IsReadOnly() {
-			parallel = false
-		}
 	}
 
 	r.mu.RUnlock()
@@ -144,27 +140,51 @@ func (r *Registry) Execute(ctx context.Context, calls []Call) []Execution {
 		}
 	}
 
-	if parallel {
-		var wait sync.WaitGroup
-		for i := range calls {
-			wait.Add(1)
-			go func(index int) {
-				defer wait.Done()
-				results[index].Result, results[index].Duration = executeOne(ctx, registered[index], calls[index])
-			}(i)
+	for start := 0; start < len(calls); {
+		if !isConcurrent(registered[start]) {
+			if registered[start] != nil {
+				results[start].Result, results[start].Duration = executeOne(ctx, registered[start], calls[start])
+			}
+
+			start++
+			continue
 		}
 
-		wait.Wait()
-		return bound(results)
-	}
-
-	for i := range calls {
-		if registered[i] != nil {
-			results[i].Result, results[i].Duration = executeOne(ctx, registered[i], calls[i])
+		end := start
+		for end < len(calls) && isConcurrent(registered[end]) {
+			end++
 		}
+
+		executeConcurrent(ctx, registered[start:end], calls[start:end], results[start:end])
+		start = end
 	}
 
 	return bound(results)
+}
+
+// isConcurrent reports whether a resolved tool has opted into concurrent
+// execution. Unknown and mutating tools run serially.
+func isConcurrent(registered Tool) bool {
+	readOnly, ok := registered.(ReadOnly)
+	return ok && readOnly.IsReadOnly()
+}
+
+func executeConcurrent(ctx context.Context, registered []Tool, calls []Call, results []Execution) {
+	if len(calls) == 1 {
+		results[0].Result, results[0].Duration = executeOne(ctx, registered[0], calls[0])
+		return
+	}
+
+	var wait sync.WaitGroup
+	for i := range calls {
+		wait.Add(1)
+		go func(index int) {
+			defer wait.Done()
+			results[index].Result, results[index].Duration = executeOne(ctx, registered[index], calls[index])
+		}(i)
+	}
+
+	wait.Wait()
 }
 
 func executeOne(ctx context.Context, registered Tool, call Call) (ToolResult, time.Duration) {
