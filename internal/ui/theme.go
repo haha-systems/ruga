@@ -44,7 +44,7 @@ func NewDefaultTheme() Theme {
 			presentation.RoleActive:     lipgloss.NewStyle().Foreground(amber),
 			presentation.RoleSelected:   lipgloss.NewStyle().Foreground(background).Background(cyan).Bold(true),
 		},
-		Canvas:        lipgloss.NewStyle().Background(background),
+		Canvas:        lipgloss.NewStyle(),
 		Text:          lipgloss.NewStyle().Foreground(text),
 		Title:         lipgloss.NewStyle().Foreground(cyan).Bold(true),
 		Divider:       lipgloss.NewStyle().Foreground(line),
