@@ -27,7 +27,7 @@ func TestReducerSeparatesConversationReasoningAndTelemetry(t *testing.T) {
 		t.Fatalf("surfaces: conversation=%d telemetry=%d", len(model.Conversation), len(model.Telemetry))
 	}
 
-	if model.Conversation[1].Kind != ConversationAssistant || model.Conversation[1].Text != "A clear answer" || len(model.Conversation[1].Events) != 3 {
+	if model.Conversation[1].Kind != ConversationAssistant || model.Conversation[1].Text != "A clear answer" || !model.Conversation[1].Completed || len(model.Conversation[1].Events) != 3 {
 		t.Fatalf("assistant response = %+v", model.Conversation[1])
 	}
 

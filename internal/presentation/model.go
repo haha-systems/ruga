@@ -33,12 +33,13 @@ const (
 )
 
 type ConversationItem struct {
-	Kind   ConversationKind
-	Text   string
-	Role   SemanticRole
-	TurnID string
-	ItemID string
-	Events []event.Event
+	Kind      ConversationKind
+	Text      string
+	Role      SemanticRole
+	TurnID    string
+	ItemID    string
+	Completed bool
+	Events    []event.Event
 }
 
 func (item ConversationItem) Matches(query string) bool {
@@ -238,6 +239,7 @@ func (m *Model) assistantMessage(ev event.Event, completed bool) {
 	item := &m.Conversation[index]
 	item.Events = append(item.Events, ev)
 	if completed {
+		item.Completed = true
 		if ev.Summary != "" {
 			item.Text = ev.Summary
 		}

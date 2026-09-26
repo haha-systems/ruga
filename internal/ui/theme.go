@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"github.com/charmbracelet/glamour/ansi"
+	"github.com/charmbracelet/glamour/styles"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/haha-systems/ruga/internal/presentation"
@@ -15,6 +17,7 @@ type Theme struct {
 	Title         lipgloss.Style
 	Divider       lipgloss.Style
 	ApprovalPanel lipgloss.Style
+	MarkdownStyle ansi.StyleConfig
 }
 
 var defaultTheme = NewDefaultTheme()
@@ -31,6 +34,18 @@ func NewDefaultTheme() Theme {
 		red        = lipgloss.Color("#EA8D97")
 		line       = lipgloss.Color("#465264")
 	)
+	markdownStyle := styles.DarkStyleConfig
+	markdownStyle.Document.Color = colorValue("#D9E1EA")
+	markdownStyle.Heading.Color = colorValue("#75D9E9")
+	markdownStyle.H1.Color = colorValue("#75D9E9")
+	markdownStyle.H1.BackgroundColor = nil
+	markdownStyle.H2.Color = colorValue("#75D9E9")
+	markdownStyle.H3.Color = colorValue("#75D9E9")
+	markdownStyle.Link.Color = colorValue("#75D9E9")
+	markdownStyle.Code.Color = colorValue("#E5BE80")
+	markdownStyle.Code.BackgroundColor = nil
+	markdownStyle.CodeBlock.StylePrimitive.Color = colorValue("#D9E1EA")
+
 	return Theme{
 		Roles: map[presentation.SemanticRole]lipgloss.Style{
 			presentation.RoleNavigation: lipgloss.NewStyle().Foreground(cyan),
@@ -50,8 +65,11 @@ func NewDefaultTheme() Theme {
 		Title:         lipgloss.NewStyle().Foreground(cyan).Bold(true),
 		Divider:       lipgloss.NewStyle().Foreground(line),
 		ApprovalPanel: lipgloss.NewStyle().Border(lipgloss.NormalBorder(), false, false, false, true).BorderForeground(amber).PaddingLeft(1),
+		MarkdownStyle: markdownStyle,
 	}
 }
+
+func colorValue(value string) *string { return &value }
 
 func (theme Theme) Role(role presentation.SemanticRole) lipgloss.Style {
 	if theme.Roles == nil {

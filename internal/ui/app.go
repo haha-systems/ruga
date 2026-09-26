@@ -1195,7 +1195,16 @@ func (m *model) refreshViews(followConversation, followTelemetry bool) {
 		}
 
 		body := wrapPreservingLines(safeTerminalText(item.Text), m.viewport.Width)
-		conversation = append(conversation, m.style(item.Role).Render(label)+"\n"+m.activeTheme().Text.Render(body))
+		bodyStyle := m.activeTheme().Text
+		if item.Kind == presentation.ConversationAssistant && item.Completed {
+			var rendered bool
+			body, rendered = renderAssistantMarkdown(item.Text, m.viewport.Width, m.activeTheme(), terminalSupportsMarkdownColor())
+			if rendered {
+				bodyStyle = lipgloss.NewStyle()
+			}
+		}
+
+		conversation = append(conversation, m.style(item.Role).Render(label)+"\n"+bodyStyle.Render(body))
 	}
 
 	m.viewport.SetContent(strings.Join(conversation, "\n\n"))

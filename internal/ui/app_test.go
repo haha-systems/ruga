@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -161,6 +162,38 @@ func TestDeltaEventsCoalesceInTimeline(t *testing.T) {
 
 	if len(m.presentation.Conversation) != 1 || m.presentation.Conversation[0].Text != "Codex works" || len(m.presentation.Conversation[0].Events) != 3 {
 		t.Fatalf("coalesced conversation = %+v", m.presentation.Conversation)
+	}
+}
+
+func TestCompletedAssistantMessageRendersMarkdown(t *testing.T) {
+	theme := NewDefaultTheme()
+	body, rendered := renderAssistantMarkdown("# A heading\n\nA **bold** answer.", 60, theme, true)
+	if !rendered {
+		t.Fatal("expected wide color terminal to render markdown")
+	}
+
+	body = strings.TrimSpace(ansi.Strip(body))
+	if strings.Contains(body, "# A heading") || strings.Contains(body, "**bold**") || !strings.Contains(body, "A heading") || !strings.Contains(body, "bold answer") {
+		t.Fatalf("markdown output = %q", body)
+	}
+}
+
+func TestMarkdownRenderingFallsBackForNarrowOrColorlessTerminal(t *testing.T) {
+	input := "# A heading\n\nA **bold** answer."
+	for _, test := range []struct {
+		name  string
+		width int
+		color bool
+	}{
+		{name: "narrow", width: 18, color: true},
+		{name: "colorless", width: 60, color: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			body, rendered := renderAssistantMarkdown(input, test.width, NewDefaultTheme(), test.color)
+			if rendered || !strings.Contains(body, "# A heading") || !strings.Contains(body, "**bold**") {
+				t.Fatalf("fallback output = %q, rendered=%v", body, rendered)
+			}
+		})
 	}
 }
 
