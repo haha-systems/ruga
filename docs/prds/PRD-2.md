@@ -341,7 +341,89 @@ context tokens consumed / successful code change
 
 Dogfooding should drive tuning of defaults.
 
-## 9. TUI
+## 9. Context Management
+
+A long session must stay inside the model's context window without losing the
+thread of the work. Tool-result narrowing (§6, §7) bounds each result; it does
+not bound the session. `Submit` replays the whole conversation every round trip
+and that conversation grows monotonically, so an endpoint eventually rejects the
+request on context length. Manage the window explicitly rather than waiting for
+the provider to fail.
+
+### Accounting
+
+Usage comes from the backend, not from guesswork:
+
+* The OpenAI-compatible backend requests `stream_options.include_usage` and
+  publishes `usage.updated` with input, output, and total tokens (§8).
+* Compaction triggers on reported input tokens when they are available.
+* Not every compatible server returns usage. Fall back to a character estimate
+  using the `(bytes+3)/4` idiom already used for tool results, and never present
+  the estimate as authoritative.
+
+The context limit is a property of the model, not the protocol. Take it as
+configuration with a conservative default and allow a per-session override.
+
+### The turn is the unit
+
+Compaction must never split a turn. An assistant message that carries tool calls
+and the tool results that answer them form one group: dropping the assistant
+message orphans its results, and dropping a result breaks the call/result
+pairing most servers require. Compact whole turns only — either a turn travels
+verbatim, or the entire turn is replaced by one summary.
+
+This mirrors §4's rule that calls and results are persisted together, and it
+extends to the parallel batches §1 of the roadmap introduced: a multi-call turn
+is still one turn.
+
+### Strategy
+
+Start with a sliding window plus synthesis:
+
+* Keep the most recent N turns verbatim.
+* When the estimate crosses a threshold, replace the oldest turns with a single
+  synthetic `system` message that summarises them.
+* The summary is deterministic and mechanical by default, so compaction is
+  testable offline and resumable. A single low-cost completion may produce a
+  better summary later; that is an optimisation, not a prerequisite.
+
+Model-driven compaction — asking the model to summarise for continuation near
+the limit — is a later option. It gives better summaries at the cost of an extra
+round trip and tighter coupling to the model.
+
+### Stable prefix
+
+Compaction rewrites the request prefix, which defeats provider prompt caching.
+Compact rarely and in large steps rather than trimming on every turn. Preserve
+the standing system instruction (for example the tool-batching guidance) across
+compaction so it does not silently disappear.
+
+### State
+
+A compaction must survive resume:
+
+* `session.Session` gains a summary and a compaction timestamp.
+* `Submit` triggers compaction inside its loop.
+* Compaction rewrites both the persisted messages and the in-memory history;
+  rewriting only one lets a resume re-inflate the full transcript.
+* Publish a `context.compacted` event so compaction flows through presentation,
+  recording, and replay like every other event.
+
+### Relationship to CES
+
+CES (roadmap §5) isolates each phase in a fresh context, which is itself a
+context-management strategy and a partial substitute for sliding-window
+compaction. Design the two together: each CES phase also needs bounded input, so
+projection rules and window rules must not contradict each other.
+
+### Non-goals
+
+* No provider-hosted conversation state as the source of truth; Ruga remains the
+  source of truth for the OpenAI-compatible path (§1).
+* No lossy trimming that splits a turn's tool call/result pairing, under any
+  strategy.
+
+## 10. TUI
 
 Resume should feel almost invisible.
 
@@ -372,7 +454,7 @@ Do not dump tool JSON into the normal UI.
 
 Raw arguments remain available for debugging.
 
-## 10. Implementation Slices
+## 11. Implementation Slices
 
 ### Slice 1 — Resume
 
