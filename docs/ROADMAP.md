@@ -24,7 +24,8 @@ records the *why* and the seams, while the PRDs hold the contracts.
 | Approval takes focus | Design | §13 |
 | Quota stats in the top line | Design | §14 |
 | Parallel tool calls | Implemented | this document, §1 |
-| Context compaction for OpenAI-compatible | Design (blocked on usage accounting) | §2 |
+| Usage accounting (OpenAI-compatible) | Implemented | this document, §2 |
+| Context compaction for OpenAI-compatible | Design | §2 |
 | Memory via Ghostdive adapter | Design (blocked on context pressure) | §3 |
 | Quota-aware cognition (QAC) | Design (blocked on CES) | §4 |
 | Cumulative Epistemic State (CES) | Design (largest change) | §5, `CES.md` |
@@ -95,6 +96,12 @@ of the work.
 - Per tool result bounding: `tool.bound` caps each result at 16 KiB with an
   explicit truncation marker, matching PRD-2 §6.
 - `turn.completed` reports `tool_result_bytes` and an estimated token count.
+- **Usage accounting (done).** The OpenAI backend requests
+  `stream_options.include_usage`, captures the `usage` block from the final
+  chunk, and publishes a normalized `usage.updated` event (input/output/total
+  tokens), deriving the total when a server omits it. `internal/presentation`
+  already reduces that event and renders it in the top line, so the trigger
+  signal now exists on the OpenAI path.
 
 ### Gaps
 
@@ -103,16 +110,13 @@ every round trip and it grows monotonically for the life of the session. Growth
 is bounded per call but unbounded per session; eventually the endpoint rejects
 the request on context length.
 
-1. **No usage telemetry for OpenAI.** The stream parser ignores the `usage`
-   object, emits no `usage.updated` event, and so Ruga has no signal to trigger
-   compaction. Codex gets usage from App Server; the OpenAI path is blind.
-   `internal/presentation` already handles a `usage.updated` event, so it would
-   render immediately once published.
-2. **No session field for a summary.** `session.Session` has messages but no
+1. **No session field for a summary.** `session.Session` has messages but no
    summary or compaction timestamp, so a compaction cannot survive resume.
-3. **Persisted state and in-memory history are separate.** `persistMessages`
+2. **Persisted state and in-memory history are separate.** `persistMessages`
    writes to the store while `b.history` is derived; compaction must rewrite
    both or resume re-inflates.
+
+Usage telemetry, once the blocker, is now in place (see above).
 
 ### The hard part: tool-call pairing
 
@@ -134,7 +138,7 @@ results travel together, or the whole group is replaced by a summary.
 
 ### Seams
 
-- Capture `usage` in the stream parser and publish `usage.updated`.
+- Capture `usage` in the stream parser and publish `usage.updated`. *(done)*
 - Trigger inside `Submit`'s loop; store the reduced form on `session.Session`.
 - Publish a `context.compacted` event so it flows through presentation and
   recording like every other event.
@@ -152,8 +156,8 @@ results travel together, or the whole group is replaced by a summary.
 
 ### Trigger
 
-Blocked on usage accounting, which is also a prerequisite for §4. Do usage
-first.
+Unblocked: usage accounting has landed. Still needs a PRD note before code, and
+its `usage.updated` signal is shared with §4 and §14.
 
 ---
 
@@ -631,9 +635,9 @@ can inform the user without taking space from the conversation or inspector.
   top line.
 - Reuse `usage.updated` where its fields match. Define a separate normalized
   field when quota and per-request token usage differ.
-- OpenAI-compatible usage accounting (§2) is a prerequisite for displaying
-  those fields on that backend; retain omission for providers without quota
-  data.
+- OpenAI-compatible usage accounting (§2) has landed, so per-request token
+  usage can render on that backend now; retain omission for providers without
+  quota data, and keep account quota distinct from token usage.
 
 ### Trigger
 
@@ -645,9 +649,9 @@ providers as their normalized usage becomes available.
 ## Dependency summary
 
 ```text
-usage accounting ──▶ context compaction (§2)
+usage accounting (done) ──▶ context compaction (§2)
         │
-        └──────────▶ QAC budgets (§4)
+        └───────────────▶ QAC budgets (§4)
 
 CES (§5) ──▶ QAC (§4)
 CES (§5) ──▶ persisted trajectories ──▶ memory (§3)
@@ -669,15 +673,16 @@ Cross-cutting roadmap dependencies:
 ```text
 configuration file (§10) ──▶ stable user preference defaults
 approval modes (§12) ──▶ approval focus behavior (§13)
-usage accounting (§2) ──▶ quota stats in top line (§14)
+usage accounting (done) ──▶ quota stats in top line (§14)
 ```
 
-Done so far: **§1** (parallel tool calls) and **§7** (markdown rendering).
+Done so far: **§1** (parallel tool calls), **§7** (markdown rendering), and
+**usage accounting** for the OpenAI-compatible path.
 
-Suggested order for what remains: **usage accounting** → **§2** → **§5** →
-**§4** → **§3** prefix layer. The tool-level memory slice of §3 can land at any
-time. The interface track (§6–§11, §13–§14) can run in parallel with or between
-the cognition work; §8 (which builds on the `MarkdownStyle` seam §7 added) is
+Suggested order for what remains: **§2** → **§5** → **§4** → **§3** prefix
+layer. The tool-level memory slice of §3 can land at any time. The interface
+track (§6–§11, §13–§14) can run in parallel with or between the cognition work;
+§8 (which builds on the `MarkdownStyle` seam §7 added) is
 next there, followed by **§6**, **§9**, **§11**, then **§14** once usage data is
 available. Approval work (§12–§13) and the configuration file (§10) are
 cross-cutting and need their contracts settled before implementation. None of
