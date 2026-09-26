@@ -39,7 +39,7 @@ func (item *TelemetryItem) updateLine() {
 	case TelemetryUsage:
 		item.Glyph, item.Type = "◈", "USAGE"
 	case TelemetryOther:
-		item.Primary = "Unrecognized activity"
+		item.Primary = item.Summary
 	}
 
 	item.DisplayStatus = displayStatus(item)

@@ -312,7 +312,7 @@ func (m *Model) operational(ev event.Event) {
 	}
 
 	if kind == TelemetryOther && ev.Kind == "backend.unknown" {
-		item.Summary = "Unrecognized activity"
+		item.Summary = ev.Summary
 	}
 
 	item.State, item.Status = state(ev)
