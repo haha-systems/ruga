@@ -27,6 +27,22 @@ state share one timeline entry; each command retains at most 4 KiB of output,
 with an omission count when more arrives. File changes, tool calls, reasoning
 and status updates, and token usage have distinct event labels in the timeline.
 
+## OpenAI-compatible backend
+
+Select the Chat Completions backend with `-backend openai`. It defaults to the
+OpenAI API at `https://api.openai.com/v1` and model `gpt-5.4-mini`. Set
+`OPENAI_API_KEY` in the environment for authenticated endpoints; the key is
+never stored in the command line or configuration. Compatible servers that do
+not require authentication can use an unset key.
+
+```sh
+export OPENAI_API_KEY="your-key"
+go run ./cmd/harness -backend openai
+```
+
+Use `-openai-base-url` and `-openai-model` to select a compatible endpoint and
+model. The key environment variable can be changed with `-openai-api-key-env`.
+
 ## Interactive controls
 
 Codex command, file-change, permission, and MCP approval requests appear in a
@@ -43,3 +59,18 @@ the system clipboard.
 Terminal text selection remains available for copying a smaller passage.
 `Esc` returns from the timeline to the composer or clears a composer draft.
 `Ctrl+X` interrupts the active turn; `Ctrl+C` exits.
+
+## Recording and replay
+
+Live sessions are recorded as normalized JSONL events under
+`$XDG_DATA_HOME/ruga/sessions` (or `~/.local/share/ruga/sessions` when
+`XDG_DATA_HOME` is unset). The recording path is printed when the harness
+starts. Replay a session by its filename stem or by passing a JSONL path:
+
+```sh
+go run ./cmd/harness replay session-abc123
+go run ./cmd/harness replay /path/to/session.jsonl
+```
+
+Replay sends events through the same event bus and timeline used for live
+sessions. The replay timeline is read-only; press `Ctrl+C` to exit.

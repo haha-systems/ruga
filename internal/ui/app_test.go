@@ -11,7 +11,9 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/haha-systems/ruga/internal/bus"
 	"github.com/haha-systems/ruga/internal/event"
+	"github.com/haha-systems/ruga/internal/recording"
 )
 
 func TestTimelineFollowsOnlyWhenAlreadyAtBottom(t *testing.T) {
@@ -31,6 +33,57 @@ func TestTimelineFollowsOnlyWhenAlreadyAtBottom(t *testing.T) {
 	m.refresh(m.viewport.AtBottom())
 	if m.viewport.AtBottom() {
 		t.Fatal("new event forced the manually scrolled timeline to the bottom")
+	}
+}
+
+func TestReplayFixtureDrivesTimelineDeterministically(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	eventBus := bus.New()
+	events, err := eventBus.Subscribe(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture := "../recording/testdata/coding-session.jsonl"
+	if err := recording.Replay(ctx, eventBus, fixture); err != nil {
+		t.Fatal(err)
+	}
+	if err := eventBus.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	m := model{viewport: viewport.New(120, 20), ready: true, status: "idle", width: 120, height: 20}
+	for range 5 {
+		select {
+		case ev := <-events:
+			updated, _ := m.Update(batchMsg{ev})
+			m = updated.(model)
+		case <-ctx.Done():
+			t.Fatal("timed out waiting for replay fixture")
+		}
+	}
+	if len(m.events) != 4 || m.events[2].Kind != "message.delta" || m.events[2].Summary != "Ruga uses a normalized event bus." {
+		t.Fatalf("fixture timeline = %+v", m.events)
+	}
+	if m.status != "idle" || m.turnActive {
+		t.Fatalf("fixture turn status = %q active=%v", m.status, m.turnActive)
+	}
+	m.refresh(true)
+	if view := m.viewport.View(); !strings.Contains(view, "Ruga uses a normalized event bus.") {
+		t.Fatalf("replayed assistant response missing from timeline: %q", view)
+	}
+}
+
+func TestReadOnlyReplayKeepsTimelineFocusAndIgnoresInterrupt(t *testing.T) {
+	m := model{readOnly: true, turnActive: true, focus: focusTimeline}
+	m.setFocus(focusComposer)
+	if m.focus != focusTimeline {
+		t.Fatalf("read-only focus = %v, want timeline", m.focus)
+	}
+	updated, cmd := m.updateKey(tea.KeyMsg{Type: tea.KeyCtrlX})
+	got := updated.(model)
+	if cmd != nil || !got.turnActive || got.interrupting {
+		t.Fatalf("Ctrl+X changed replay state: active=%v interrupting=%v cmd=%v", got.turnActive, got.interrupting, cmd)
 	}
 }
 

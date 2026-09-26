@@ -27,10 +27,11 @@ type approvalResultMsg struct {
 type interruptResultMsg struct{ err error }
 
 type Config struct {
-	Project string
-	Branch  string
-	Backend string
-	Model   string
+	Project  string
+	Branch   string
+	Backend  string
+	Model    string
+	ReadOnly bool
 }
 
 type Actions struct {
@@ -68,6 +69,7 @@ type model struct {
 	focus        focusTarget
 	turnActive   bool
 	interrupting bool
+	readOnly     bool
 	width        int
 	height       int
 	ready        bool
@@ -102,11 +104,19 @@ func Run(ctx context.Context, events <-chan event.Event, submit func(context.Con
 	if len(configs) > 0 {
 		config = configs[0]
 	}
+	if config.ReadOnly {
+		input.Placeholder = "Replay is read-only"
+		input.Blur()
+	}
+	focus := focusComposer
+	if config.ReadOnly {
+		focus = focusTimeline
+	}
 	program := tea.NewProgram(model{
 		stream: batchEvents(ctx, events), input: input, submit: submit, actions: actions,
-		ctx: ctx, status: "idle", focus: focusComposer, submitting: make(map[string]bool),
+		ctx: ctx, status: "idle", focus: focus, submitting: make(map[string]bool),
 		project: config.Project, branch: config.Branch, backend: config.Backend,
-		modelName: config.Model, search: search,
+		modelName: config.Model, search: search, readOnly: config.ReadOnly,
 	}, tea.WithContext(ctx), tea.WithAltScreen())
 	_, err := program.Run()
 	return err
@@ -227,6 +237,9 @@ func (m model) footerKeys() string {
 	case focusTimeline:
 		return "↑/↓ scroll · pgup/pgdn page · g/G top/bottom · c copy · tab composer · ctrl+x interrupt · ctrl+c quit" + copyKeys
 	default:
+		if m.readOnly {
+			return "replay · tab timeline · ctrl+c quit" + copyKeys
+		}
 		return "enter send · tab timeline · ctrl+x interrupt · ctrl+c quit" + copyKeys
 	}
 }
@@ -370,6 +383,9 @@ func fitLine(value string, width int) string {
 }
 
 func (m *model) setFocus(target focusTarget) {
+	if m.readOnly && target == focusComposer {
+		target = focusTimeline
+	}
 	if target == focusApproval && len(m.approvals) == 0 {
 		target = focusComposer
 	}
@@ -401,7 +417,7 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyCtrlC:
 		return m, tea.Quit
 	case tea.KeyCtrlX:
-		if !m.turnActive || m.interrupting {
+		if m.readOnly || !m.turnActive || m.interrupting {
 			return m, nil
 		}
 		m.interrupting = true
@@ -506,6 +522,9 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if msg.Type == tea.KeyEnter {
+		if m.readOnly {
+			return m, nil
+		}
 		prompt := strings.TrimSpace(m.input.Value())
 		if prompt == "" || m.turnActive || m.interrupting {
 			return m, nil
@@ -514,6 +533,9 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.status = "working"
 		m.turnActive = true
 		return m, submitPrompt(m.ctx, m.submit, prompt)
+	}
+	if m.readOnly {
+		return m, nil
 	}
 	var inputCmd tea.Cmd
 	m.input, inputCmd = m.input.Update(msg)
@@ -640,11 +662,11 @@ func (m *model) add(ev event.Event) {
 		m.events = append(m.events, ev)
 	case "approval.requested":
 		ev.Raw, ev.Data = nil, nil
-		if ev.Approval != nil && !m.hasApproval(ev.Approval.RequestID) {
+		if !m.readOnly && ev.Approval != nil && !m.hasApproval(ev.Approval.RequestID) {
 			m.approvals = append(m.approvals, *ev.Approval)
 		}
 		m.events = append(m.events, ev)
-		if ev.Approval != nil {
+		if !m.readOnly && ev.Approval != nil {
 			m.setFocus(focusApproval)
 		}
 	case "approval.resolved":

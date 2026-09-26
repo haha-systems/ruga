@@ -1,0 +1,5 @@
+{"id":"fixture-1","timestamp":"2026-01-02T03:04:05Z","backend":"codex","kind":"turn.started","thread_id":"thread-1","turn_id":"turn-1"}
+{"id":"fixture-2","timestamp":"2026-01-02T03:04:06Z","backend":"codex","kind":"user.message","thread_id":"thread-1","turn_id":"turn-1","summary":"Explain the project"}
+{"id":"fixture-3","timestamp":"2026-01-02T03:04:07Z","backend":"codex","kind":"message.delta","thread_id":"thread-1","turn_id":"turn-1","item_id":"assistant-1","summary":"Ruga "}
+{"id":"fixture-4","timestamp":"2026-01-02T03:04:08Z","backend":"codex","kind":"message.delta","thread_id":"thread-1","turn_id":"turn-1","item_id":"assistant-1","summary":"uses a normalized event bus."}
+{"id":"fixture-5","timestamp":"2026-01-02T03:04:09Z","backend":"codex","kind":"turn.completed","thread_id":"thread-1","turn_id":"turn-1","data":{"status":"completed"}}
