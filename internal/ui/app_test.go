@@ -337,6 +337,64 @@ func TestNarrowInspectorUsesFullWidthAndKeepsConversation(t *testing.T) {
 	}
 }
 
+func TestPanelPlacementControlsPaneGeometry(t *testing.T) {
+	for _, placement := range []PanelPlacement{PanelRight, PanelLeft, PanelBottom, PanelTop} {
+		t.Run(string(placement), func(t *testing.T) {
+			m := interactiveTestModel()
+			m.panelPlacement = placement
+			m.showTelemetry = true
+			m.resize(100, 20)
+			m.viewport.SetContent("conversation sentinel")
+			m.telemetryViewport.SetContent("event stream sentinel")
+
+			if placement.vertical() {
+				if m.viewport.Width != 100 || m.telemetryViewport.Width != 100 {
+					t.Fatalf("vertical pane widths = %d, %d", m.viewport.Width, m.telemetryViewport.Width)
+				}
+
+				if m.telemetryViewport.Height != m.panelHeight || m.viewport.Height+m.telemetryViewport.Height+1 != 16 {
+					t.Fatalf("vertical pane heights = %d, %d with panel height %d", m.viewport.Height, m.telemetryViewport.Height, m.panelHeight)
+				}
+			} else {
+				conversation, inspector := m.viewWidths()
+				if m.viewport.Width != conversation || m.telemetryViewport.Width != inspector ||
+					m.viewport.Height != m.telemetryViewport.Height {
+
+					t.Fatalf("horizontal pane geometry = %dx%d and %dx%d", m.viewport.Width, m.viewport.Height, m.telemetryViewport.Width, m.telemetryViewport.Height)
+				}
+			}
+
+			heading := m.viewHeading()
+			conversationAt, inspectorAt := strings.Index(heading, "CONVERSATION"), strings.Index(heading, "EVENT STREAM")
+			if conversationAt < 0 || inspectorAt < 0 {
+				t.Fatalf("pane heading = %q", heading)
+			}
+
+			if (placement == PanelLeft || placement == PanelTop) && inspectorAt > conversationAt {
+				t.Fatalf("inspector should precede conversation for %s placement: %q", placement, heading)
+			}
+
+			if (placement == PanelRight || placement == PanelBottom) && conversationAt > inspectorAt {
+				t.Fatalf("conversation should precede inspector for %s placement: %q", placement, heading)
+			}
+
+			body := m.viewBody()
+			conversationAt, inspectorAt = strings.Index(body, "conversation sentinel"), strings.Index(body, "event stream sentinel")
+			if conversationAt < 0 || inspectorAt < 0 {
+				t.Fatalf("pane body = %q", body)
+			}
+
+			if (placement == PanelLeft || placement == PanelTop) && inspectorAt > conversationAt {
+				t.Fatalf("inspector body should precede conversation for %s placement: %q", placement, body)
+			}
+
+			if (placement == PanelRight || placement == PanelBottom) && conversationAt > inspectorAt {
+				t.Fatalf("conversation body should precede inspector for %s placement: %q", placement, body)
+			}
+		})
+	}
+}
+
 func TestSmallTerminalKeepsEveryRenderedLineWithinWidth(t *testing.T) {
 	m := interactiveTestModel()
 	m.resize(25, 8)

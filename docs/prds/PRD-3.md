@@ -487,7 +487,12 @@ Add:
 
 ### Slice 5 — Sliding Panel
 
-Replace the fixed split with an animated right-side inspector.
+Replace the fixed split with an animated inspector. The event stream can be
+placed on the right, left, bottom, or top edge with the `-panel` option.
+
+Side placements split the conversation and inspector horizontally. Top and
+bottom placements stack them vertically. On narrow terminals, the inspector
+continues to use the full-width fallback.
 
 The panel should:
 

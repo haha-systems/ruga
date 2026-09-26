@@ -49,12 +49,17 @@ func main() {
 	}
 
 	var options backendOptions
+	options.panel = string(ui.PanelRight)
+
 	flags := flag.NewFlagSet("ruga", flag.ContinueOnError)
 	flags.StringVar(&options.name, "backend", "", "backend to use: codex or openai")
 	flags.StringVar(&options.codexBinary, "codex", "codex", "path to the Codex CLI binary")
 	flags.StringVar(&options.openAIBaseURL, "openai-base-url", "https://api.openai.com/v1", "OpenAI-compatible API base URL")
 	flags.StringVar(&options.openAIModel, "openai-model", "gpt-5.4-mini", "model for the OpenAI-compatible backend")
 	flags.StringVar(&options.openAIKeyEnv, "openai-api-key-env", "OPENAI_API_KEY", "environment variable containing the OpenAI-compatible API key")
+	flags.Func("panel", "event stream placement: right, left, bottom, or top", func(value string) error {
+		return setPanelOption(&options, value)
+	})
 	flags.BoolVar(&options.resumeLatest, "resume", false, "resume the most recent session for this directory")
 	options.resumeID = resumeID
 
@@ -86,8 +91,27 @@ func main() {
 	}
 }
 
+func validatePanelOption(value string) error {
+	switch ui.PanelPlacement(value) {
+	case ui.PanelRight, ui.PanelLeft, ui.PanelBottom, ui.PanelTop:
+		return nil
+	}
+
+	return fmt.Errorf("invalid event stream placement %q (choose right, left, bottom, or top)", value)
+}
+
+func setPanelOption(options *backendOptions, value string) error {
+	if err := validatePanelOption(value); err != nil {
+		return err
+	}
+
+	options.panel = value
+	return nil
+}
+
 type backendOptions struct {
 	name             string
+	panel            string
 	codexBinary      string
 	openAIBaseURL    string
 	openAIModel      string
@@ -233,6 +257,7 @@ func run(options backendOptions) (resultErr error) {
 
 	uiErr := ui.Run(ctx, events, backendClient.Submit, actions, ui.Config{
 		Project: project, Branch: branch, Backend: backendDisplay, Model: modelName,
+		Panel: ui.PanelPlacement(options.panel),
 	})
 
 	stopBackendErr := backendClient.Close()

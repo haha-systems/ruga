@@ -17,7 +17,7 @@ records the *why* and the seams, while the PRDs hold the contracts.
 | Multiline composer | Design | §6 |
 | Markdown rendering | Design | §7 |
 | Selectable themes | Design | §8 |
-| Movable event stream | Design | §9 |
+| Movable event stream | Implemented | §9, `PRD-3.md` Slice 5 |
 | Parallel tool calls | Design | this document, §1 |
 | Context compaction for OpenAI-compatible | Design (blocked on usage accounting) | §2 |
 | Memory via Ghostdive adapter | Design (blocked on context pressure) | §3 |
@@ -521,59 +521,13 @@ Slice 7). Small and independent otherwise.
 
 ---
 
-## 9. Movable event stream
+## 9. Movable event stream — implemented
 
-### Intent
-
-Let the user place the event/telemetry panel on any edge — right (current),
-left, bottom, or top — so the layout adapts to preference and terminal shape.
-
-### What already exists
-
-The inspector currently animates in from the right only. `viewBody()` joins the
-conversation and telemetry views `JoinHorizontal(Top, …)` with a vertical
-divider, `viewWidths()` splits width, and there is already a narrow-terminal
-fallback where the panel takes the full width. Panel open/close is animated via
-`panelPosition`/`panelVelocity`.
-
-### Approach
-
-Generalise the layout into a small placement model:
-
-- A `PanelPlacement` value (`right`, `left`, `bottom`, `top`) held on the model.
-- Horizontal placements (`left`/`right`) keep the current side-by-side join,
-  swapping which side gets the conversation.
-- Vertical placements (`top`/`bottom`) stack the two views with `JoinVertical`,
-  which means the telemetry viewport becomes full-width and the conversation
-  takes the remaining height. The inspector's compact lines still work at full
-  width.
-- The animation direction follows the placement: the offset axis is x for
-  left/right and y for top/bottom.
-
-### Seams
-
-- `internal/ui/app.go`: `viewBody`, `viewWidths`, `resize`, `panelVisible`, and
-  the animation update all currently assume a single horizontal axis and need to
-  branch on placement.
-- `cmd/ruga/main.go`: a `-panel` flag; optionally persist in session state.
-
-### Constraints
-
-- The narrow-terminal fallback (`width < 70`) already switches to a full-width
-  panel; keep that behaviour and decide how it interacts with explicit
-  placement.
-- The chrome-height math in `resize` assumes the panel shares the row; vertical
-  placement changes which dimension is consumed.
-- Keybindings and the `Tab` focus cycle must remain correct regardless of
-  placement.
-- PRD-3's sliding-panel slice (Slice 5) describes a right-side inspector;
-  generalising to four edges is an extension beyond that PRD and may deserve a
-  note there or in a follow-up PRD.
-
-### Trigger
-
-Independent. Best done after PRD-3's semantic TUI and Slice 5 settle, since it
-generalises that layout code.
+The `-panel` option places the event stream on the right, left, bottom, or top
+edge. Side placements split the available width; top and bottom placements
+split the available height. The inspector retains its animated open/close
+behaviour, and narrow terminals keep the full-width inspector fallback. The
+placement contract and layout are documented in `PRD-3.md` Slice 5.
 
 ---
 
@@ -595,15 +549,13 @@ Interface track, largely independent of the cognition stack:
 ```text
 markdown rendering (§7) ──▶ themes (§8)   share the theme abstraction
 multiline composer (§6)   — independent
-movable event stream (§9) — after PRD-3 Slice 5
 ```
 
 Suggested order if pursued: **§1** (cheap, independent) → **usage accounting** →
 **§2** → **§5** → **§4** → **§3** prefix layer. The tool-level memory slice of
-§3 can land at any time. The interface track (§6–§9) can run in parallel with or
+§3 can land at any time. The interface track (§6–§8) can run in parallel with or
 between the cognition work; a reasonable order is **§8** (unblocks §7), **§6**,
-**§7**, then **§9** once the sliding panel settles. None of them block the
-cognition stack.
+then **§7**. None of them block the cognition stack.
 
 ## Non-goals for this roadmap
 

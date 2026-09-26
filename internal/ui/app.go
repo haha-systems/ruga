@@ -43,8 +43,18 @@ type Config struct {
 	Branch   string
 	Backend  string
 	Model    string
+	Panel    PanelPlacement
 	ReadOnly bool
 }
+
+type PanelPlacement string
+
+const (
+	PanelRight  PanelPlacement = "right"
+	PanelLeft   PanelPlacement = "left"
+	PanelBottom PanelPlacement = "bottom"
+	PanelTop    PanelPlacement = "top"
+)
 
 type Actions struct {
 	ResolveApproval func(context.Context, string, event.ApprovalDecision) error
@@ -95,6 +105,8 @@ type model struct {
 	panelPosition      float64
 	panelVelocity      float64
 	panelWidth         int
+	panelHeight        int
+	panelPlacement     PanelPlacement
 	panelGeneration    int
 	panelAnimating     bool
 	unseenTelemetry    int
@@ -126,6 +138,10 @@ func Run(ctx context.Context, events <-chan event.Event, submit func(context.Con
 		input.Blur()
 	}
 
+	if !validPanelPlacement(config.Panel) {
+		config.Panel = PanelRight
+	}
+
 	focus := focusComposer
 	if config.ReadOnly {
 		focus = focusTimeline
@@ -136,6 +152,7 @@ func Run(ctx context.Context, events <-chan event.Event, submit func(context.Con
 		ctx: ctx, status: "idle", focus: focus, submitting: make(map[string]bool),
 		project: config.Project, branch: config.Branch, backend: config.Backend,
 		modelName: config.Model, search: search, readOnly: config.ReadOnly,
+		panelPlacement:    config.Panel,
 		selectedTelemetry: -1, telemetryFollowing: true,
 		theme: defaultTheme,
 	}, tea.WithContext(ctx), tea.WithAltScreen())
@@ -151,11 +168,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		follow := !m.ready || m.viewport.AtBottom()
 		followTelemetry := m.telemetryFollowing && (!m.ready || m.telemetryViewport.AtBottom())
 		if msg.Width < 70 {
-			m.panelPosition, m.panelVelocity, m.panelWidth = 0, 0, 0
+			m.panelPosition, m.panelVelocity, m.panelWidth, m.panelHeight = 0, 0, 0, 0
 			m.panelAnimating = false
 		} else if m.showTelemetry && !m.panelAnimating {
-			m.panelWidth = desiredPanelWidth(msg.Width)
-			m.panelPosition = float64(m.panelWidth)
+			m.setPanelSize(m.desiredPanelSize())
+			m.panelPosition = float64(m.desiredPanelSize())
 		}
 
 		m.resize(msg.Width, msg.Height)
@@ -170,17 +187,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		followTelemetry := m.telemetryFollowing && (!m.ready || m.telemetryViewport.AtBottom())
 		target := 0.0
 		if m.showTelemetry {
-			target = float64(desiredPanelWidth(m.width))
+			target = float64(m.desiredPanelSize())
 		}
 
 		m.panelPosition, m.panelVelocity = panelSpring.Update(m.panelPosition, m.panelVelocity, target)
-		m.panelPosition = math.Max(0, math.Min(float64(desiredPanelWidth(m.width)), m.panelPosition))
+		m.panelPosition = math.Max(0, math.Min(float64(m.desiredPanelSize()), m.panelPosition))
 		if math.Abs(m.panelPosition-target) < 0.5 && math.Abs(m.panelVelocity) < 1 {
 			m.panelPosition, m.panelVelocity = target, 0
 			m.panelAnimating = false
 		}
 
-		m.panelWidth = int(math.Round(m.panelPosition))
+		m.setPanelSize(int(math.Round(m.panelPosition)))
 		m.resize(m.width, m.height)
 		m.refreshViews(follow, followTelemetry)
 		if m.panelAnimating {
@@ -317,11 +334,30 @@ func (m model) viewHeading() string {
 		return m.style(presentation.RoleMuted).Render(fitLine(m.inspectorHeading(), m.width))
 	}
 
+	if m.panelPlacement.vertical() {
+		conversation, inspector := "CONVERSATION", m.inspectorHeading()
+		if m.panelPlacement == PanelTop {
+			conversation, inspector = inspector, conversation
+		}
+
+		return m.style(presentation.RoleMuted).Render(fitLine(conversation+"  ·  "+inspector, m.width))
+	}
+
 	left, right := m.viewWidths()
+	conversationHeading := m.style(presentation.RoleMuted).Width(left).Render("CONVERSATION")
+	inspectorHeading := m.style(presentation.RoleMuted).Width(right).Render(fitLine(m.inspectorHeading(), right))
+	if m.panelPlacement == PanelLeft {
+		return lipgloss.JoinHorizontal(lipgloss.Top,
+			inspectorHeading,
+			m.activeTheme().Divider.Render("│"),
+			conversationHeading,
+		)
+	}
+
 	return lipgloss.JoinHorizontal(lipgloss.Top,
-		m.style(presentation.RoleMuted).Width(left).Render("CONVERSATION"),
+		conversationHeading,
 		m.activeTheme().Divider.Render("│"),
-		m.style(presentation.RoleMuted).Width(right).Render(fitLine(m.inspectorHeading(), right)),
+		inspectorHeading,
 	)
 }
 
@@ -343,16 +379,59 @@ func (m model) viewBody() string {
 		return m.telemetryViewport.View()
 	}
 
+	if m.panelPlacement.vertical() {
+		conversation, inspector := m.viewport.View(), m.telemetryViewport.View()
+		divider := m.activeTheme().Divider.Render(strings.Repeat("─", m.width))
+		if m.panelPlacement == PanelTop {
+			conversation, inspector = inspector, conversation
+		}
+
+		return lipgloss.JoinVertical(lipgloss.Left, conversation, divider, inspector)
+	}
+
 	divider := m.activeTheme().Divider.Render(strings.TrimSuffix(strings.Repeat("│\n", m.viewport.Height), "\n"))
-	return lipgloss.JoinHorizontal(lipgloss.Top, m.viewport.View(), divider, m.telemetryViewport.View())
+	conversation, inspector := m.viewport.View(), m.telemetryViewport.View()
+	if m.panelPlacement == PanelLeft {
+		conversation, inspector = inspector, conversation
+		return lipgloss.JoinHorizontal(lipgloss.Top, conversation, divider, inspector)
+	}
+
+	return lipgloss.JoinHorizontal(lipgloss.Top, conversation, divider, inspector)
 }
 
 func (m model) viewWidths() (int, int) {
 	return max(1, m.width-m.panelWidth-1), max(1, m.panelWidth)
 }
 
+func (m model) desiredPanelSize() int {
+	if m.panelPlacement.vertical() {
+		return max(3, (m.height-5)*2/5)
+	}
+
+	return desiredPanelWidth(m.width)
+}
+
+func (m *model) setPanelSize(size int) {
+	if m.panelPlacement.vertical() {
+		m.panelHeight = size
+		m.panelWidth = 0
+		return
+	}
+
+	m.panelWidth = size
+	m.panelHeight = 0
+}
+
+func (p PanelPlacement) vertical() bool {
+	return p == PanelTop || p == PanelBottom
+}
+
+func validPanelPlacement(p PanelPlacement) bool {
+	return p == PanelRight || p == PanelLeft || p == PanelBottom || p == PanelTop
+}
+
 func (m model) panelVisible() bool {
-	return m.panelWidth > 0 || m.width < 70 && m.showTelemetry
+	return m.panelWidth > 0 || m.panelHeight > 0 || m.width < 70 && m.showTelemetry
 }
 
 func desiredPanelWidth(width int) int {
@@ -361,9 +440,9 @@ func desiredPanelWidth(width int) int {
 
 func (m *model) resize(width, height int) {
 	m.width, m.height = max(1, width), max(1, height)
-	if m.width >= 70 && m.showTelemetry && m.panelWidth == 0 && !m.panelAnimating {
-		m.panelWidth = desiredPanelWidth(m.width)
-		m.panelPosition = float64(m.panelWidth)
+	if m.width >= 70 && m.showTelemetry && m.panelWidth == 0 && m.panelHeight == 0 && !m.panelAnimating {
+		m.setPanelSize(m.desiredPanelSize())
+		m.panelPosition = float64(m.desiredPanelSize())
 	}
 
 	m.input.Width = max(1, width-lipgloss.Width(m.input.Prompt)-2)
@@ -384,17 +463,23 @@ func (m *model) resize(width, height int) {
 		conversationWidth, telemetryWidth = m.viewWidths()
 	}
 
+	conversationHeight, telemetryHeight := viewportHeight, viewportHeight
+	if m.panelHeight > 0 && m.width >= 70 {
+		telemetryHeight = min(m.panelHeight, max(1, viewportHeight-2))
+		conversationHeight = max(1, viewportHeight-telemetryHeight-1)
+	}
+
 	if !m.ready {
-		m.viewport = viewport.New(conversationWidth, viewportHeight)
-		m.telemetryViewport = viewport.New(telemetryWidth, viewportHeight)
+		m.viewport = viewport.New(conversationWidth, conversationHeight)
+		m.telemetryViewport = viewport.New(telemetryWidth, telemetryHeight)
 		m.ready = true
 		return
 	}
 
 	m.viewport.Width = conversationWidth
-	m.viewport.Height = viewportHeight
+	m.viewport.Height = conversationHeight
 	m.telemetryViewport.Width = telemetryWidth
-	m.telemetryViewport.Height = viewportHeight
+	m.telemetryViewport.Height = telemetryHeight
 }
 
 func (m model) footerKeys() string {
@@ -776,7 +861,7 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nextPanelFrame(m.panelGeneration)
 		}
 
-		m.panelWidth, m.panelPosition, m.panelVelocity = 0, 0, 0
+		m.panelWidth, m.panelHeight, m.panelPosition, m.panelVelocity = 0, 0, 0, 0
 		m.resizeIfReady()
 		if m.showTelemetry && m.telemetryFollowing && m.telemetryViewport.AtBottom() {
 			m.unseenTelemetry = 0

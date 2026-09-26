@@ -47,6 +47,23 @@ func TestNewBackendSelection(t *testing.T) {
 	})
 }
 
+func TestValidatePanelOption(t *testing.T) {
+	options := backendOptions{}
+	for _, value := range []string{"right", "left", "bottom", "top"} {
+		if err := setPanelOption(&options, value); err != nil {
+			t.Errorf("setPanelOption(%q): %v", value, err)
+		}
+	}
+
+	if options.panel != "top" {
+		t.Fatalf("panel option = %q, want top", options.panel)
+	}
+
+	if err := setPanelOption(&options, "center"); err == nil {
+		t.Fatal("setPanelOption(center) error = nil, want invalid placement error")
+	}
+}
+
 func TestResolveSessionSelectsAndLoadsSessions(t *testing.T) {
 	store := session.NewStore(t.TempDir())
 	cwd := filepath.Join(t.TempDir(), "repo")
