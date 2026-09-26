@@ -31,6 +31,7 @@ func main() {
 		if len(args) < 2 {
 			fatal(fmt.Errorf("usage: ruga resume <session> [flags]"))
 		}
+
 		resumeID = args[1]
 		args = args[2:]
 	}

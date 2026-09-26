@@ -57,9 +57,11 @@ func (theme Theme) Role(role presentation.SemanticRole) lipgloss.Style {
 	if theme.Roles == nil {
 		theme = defaultTheme
 	}
+
 	if style, ok := theme.Roles[role]; ok {
 		return style
 	}
+
 	return theme.Text
 }
 
@@ -67,6 +69,7 @@ func (m model) activeTheme() Theme {
 	if m.theme.Roles == nil {
 		return defaultTheme
 	}
+
 	return m.theme
 }
 

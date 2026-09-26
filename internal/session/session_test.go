@@ -20,18 +20,23 @@ func TestStoreRoundTripAndLatestByDirectory(t *testing.T) {
 	if err := store.Save(first); err != nil {
 		t.Fatalf("Save(first): %v", err)
 	}
+
 	loaded, err := store.Load(first.ID)
 	if err != nil {
 		t.Fatalf("Load(): %v", err)
 	}
+
 	if loaded.ID != first.ID || loaded.Backend != first.Backend || loaded.CWD != cwd || len(loaded.Messages) != 3 || loaded.Messages[1].ToolCalls[0].ID != "provider-id" ||
 		loaded.Messages[2].ToolCallID != "provider-id" {
+
 		t.Fatalf("loaded session = %+v", loaded)
 	}
+
 	info, err := os.Stat(store.path(first.ID))
 	if err != nil {
 		t.Fatalf("stat session: %v", err)
 	}
+
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("session file permissions = %o, want 600", info.Mode().Perm())
 	}
@@ -41,14 +46,17 @@ func TestStoreRoundTripAndLatestByDirectory(t *testing.T) {
 	if err := store.Save(second); err != nil {
 		t.Fatalf("Save(second): %v", err)
 	}
+
 	otherDir := New("openai", filepath.Join(t.TempDir(), "other"))
 	if err := store.Save(otherDir); err != nil {
 		t.Fatalf("Save(otherDir): %v", err)
 	}
+
 	latest, err := store.Latest("openai", cwd)
 	if err != nil {
 		t.Fatalf("Latest(): %v", err)
 	}
+
 	if latest.ID != second.ID {
 		t.Fatalf("latest ID = %q, want %q", latest.ID, second.ID)
 	}

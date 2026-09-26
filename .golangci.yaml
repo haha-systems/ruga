@@ -130,7 +130,6 @@ linters:
     - usetesting
     - varnamelen
     - wastedassign
-    - whitespace
     - wrapcheck
     - wsl_v5
     - zerologlint
@@ -247,10 +246,8 @@ linters:
     - usetesting
     - varnamelen
     - wastedassign
-    - whitespace
     - wrapcheck
     - wsl
-    - wsl_v5
     - zerologlint
 
   # All available settings of specific linters.
@@ -4598,7 +4595,6 @@ linters:
         - type-switch
         - leading-whitespace
         - trailing-whitespace
-        - after-block
         - after-decl
         - after-defer
         - after-expr
@@ -4632,7 +4628,6 @@ linters:
         - type-switch
         - leading-whitespace
         - trailing-whitespace
-        - after-block
         - after-decl
         - after-defer
         - after-expr

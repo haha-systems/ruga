@@ -41,6 +41,7 @@ func (item *TelemetryItem) updateLine() {
 	case TelemetryOther:
 		item.Primary = "Unrecognized activity"
 	}
+
 	item.DisplayStatus = displayStatus(item)
 	if duration := elapsed(item.Events); duration > 0 {
 		item.DisplayStatus += " " + duration.String()
@@ -52,10 +53,12 @@ func (item *TelemetryItem) toolLine() {
 	if index := strings.LastIndexAny(name, "/."); index >= 0 {
 		name = name[index+1:]
 	}
+
 	item.Type = strings.ToUpper(name)
 	if item.Type == "" {
 		item.Type = "TOOL"
 	}
+
 	args := toolArguments(item.Details)
 	result := toolResult(item.Details)
 	switch name {
@@ -65,6 +68,7 @@ func (item *TelemetryItem) toolLine() {
 		if path := argumentString(args, "path"); path != "" {
 			item.Primary += " · " + path
 		}
+
 		item.Detail = searchCount(result)
 
 	case "read":
@@ -74,6 +78,7 @@ func (item *TelemetryItem) toolLine() {
 		if start == 0 {
 			start = 1
 		}
+
 		if end > 0 {
 			item.Detail = fmt.Sprintf("L%d–%d", start, end)
 		} else {
@@ -86,6 +91,7 @@ func (item *TelemetryItem) toolLine() {
 		if item.Primary == "" {
 			item.Primary = "."
 		}
+
 		item.Detail = resultCount(result, "entries")
 
 	case "patch":
@@ -109,9 +115,11 @@ func (item *TelemetryItem) toolLine() {
 		item.Glyph = "◇"
 		item.Primary = item.Summary
 	}
+
 	if item.Primary == "" {
 		item.Primary = item.Summary
 	}
+
 	if item.Detail == "" && result != "" && name != "exec" {
 		item.Detail = firstLine(result)
 	}
@@ -122,10 +130,12 @@ func firstCommand(events []event.Event, fallback string) string {
 		if command, ok := ev.Data["command"].(string); ok && command != "" {
 			return command
 		}
+
 		if ev.Kind == "command.started" && ev.Summary != "" {
 			return ev.Summary
 		}
 	}
+
 	return fallback
 }
 
@@ -138,6 +148,7 @@ func toolArguments(details []Detail) map[string]any {
 			}
 		}
 	}
+
 	return nil
 }
 
@@ -147,6 +158,7 @@ func toolResult(details []Detail) string {
 			return detail.Value
 		}
 	}
+
 	return ""
 }
 
@@ -165,6 +177,7 @@ func quoted(value any) string {
 	if text == "" {
 		return ""
 	}
+
 	return fmt.Sprintf("%q", text)
 }
 
@@ -174,6 +187,7 @@ func patchPath(patch string) string {
 			return strings.TrimPrefix(line, "+++ b/")
 		}
 	}
+
 	return "Patch"
 }
 
@@ -181,18 +195,22 @@ func resultCount(result, noun string) string {
 	if result == "" {
 		return ""
 	}
+
 	if strings.HasPrefix(result, "no matches") {
 		return "0 " + noun
 	}
+
 	if !strings.Contains(result, "\n") && strings.HasSuffix(result, noun) {
 		return result
 	}
+
 	count := 0
 	for _, line := range strings.Split(result, "\n") {
 		if line != "" && !strings.HasPrefix(line, "…") {
 			count++
 		}
 	}
+
 	return fmt.Sprintf("%d %s", count, noun)
 }
 
@@ -202,21 +220,26 @@ func searchCount(result string) string {
 	if result == "" {
 		return ""
 	}
+
 	if strings.HasPrefix(result, "no matches") {
 		return "0 hits"
 	}
+
 	if !strings.Contains(result, "\n") && strings.HasSuffix(result, " hits") {
 		return result
 	}
+
 	count := 0
 	for _, line := range strings.Split(result, "\n") {
 		if searchMatchLine.MatchString(line) {
 			count++
 		}
 	}
+
 	if count == 0 {
 		return "results"
 	}
+
 	return fmt.Sprintf("%d hits", count)
 }
 
@@ -235,12 +258,14 @@ func displayStatus(item *TelemetryItem) string {
 		if item.Status == "interrupted" || item.Status == "stopped" {
 			return "! " + strings.ToUpper(item.Status)
 		}
+
 		return "! ATTENTION"
 
 	case RoleSuccess:
 		if item.Type == "EXEC" {
 			return "✓ PASS"
 		}
+
 		return "✓ DONE"
 
 	default:
@@ -257,6 +282,7 @@ func elapsed(events []event.Event) time.Duration {
 			return (time.Duration(value) * time.Millisecond).Round(time.Millisecond)
 		}
 	}
+
 	return 0
 }
 
@@ -269,31 +295,39 @@ func (item TelemetryItem) ExpandedDetails() []Detail {
 		if item.Type == "EXEC" {
 			label = "command"
 		}
+
 		expanded = append(expanded, Detail{Label: label, Value: item.Primary})
 	}
+
 	if item.Detail != "" {
 		expanded = append(expanded, Detail{Label: "summary", Value: item.Detail})
 	}
+
 	if item.DisplayStatus != "" {
 		expanded = append(expanded, Detail{Label: "status", Value: item.DisplayStatus})
 	}
+
 	if item.ItemID != "" {
 		expanded = append(expanded, Detail{Label: "item", Value: item.ItemID})
 	}
+
 	for _, detail := range item.Details {
 		if detail.Label != "arguments" {
 			expanded = append(expanded, detail)
 			continue
 		}
+
 		var arguments map[string]any
 		if json.Unmarshal([]byte(detail.Value), &arguments) != nil {
 			expanded = append(expanded, detail)
 			continue
 		}
+
 		keys := make([]string, 0, len(arguments))
 		for key := range arguments {
 			keys = append(keys, key)
 		}
+
 		sort.Strings(keys)
 		for _, key := range keys {
 			value, ok := arguments[key].(string)
@@ -301,8 +335,10 @@ func (item TelemetryItem) ExpandedDetails() []Detail {
 				encoded, _ := json.MarshalIndent(arguments[key], "", "  ")
 				value = string(encoded)
 			}
+
 			expanded = append(expanded, Detail{Label: key, Value: value})
 		}
 	}
+
 	return expanded
 }

@@ -112,15 +112,19 @@ func TestNormalize(t *testing.T) {
 			if ev.Kind != tt.wantKind {
 				t.Fatalf("Kind = %q, want %q", ev.Kind, tt.wantKind)
 			}
+
 			if ev.Summary != tt.wantSummary {
 				t.Fatalf("Summary = %q, want %q", ev.Summary, tt.wantSummary)
 			}
+
 			if tt.wantItemID != "" && ev.ItemID != tt.wantItemID {
 				t.Fatalf("ItemID = %q, want %q", ev.ItemID, tt.wantItemID)
 			}
+
 			if ev.Backend != "codex" || ev.Source != tt.method || ev.ID == "" || ev.Timestamp.IsZero() {
 				t.Fatalf("missing event metadata: %+v", ev)
 			}
+
 			if string(ev.Raw) != tt.payload {
 				t.Fatalf("Raw = %s, want %s", ev.Raw, tt.payload)
 			}
@@ -151,6 +155,7 @@ func TestNormalizeCommandAndToolCompletionExposeSemanticFields(t *testing.T) {
 	if command.Data["exit_code"] != 2 || command.Data["output"] != "failed details" {
 		t.Fatalf("command completion data = %+v", command.Data)
 	}
+
 	tool := normalize("item/completed", json.RawMessage(`{"item":{"type":"mcpToolCall","tool":"search","success":false}}`))
 	if tool.Data["error"] != true {
 		t.Fatalf("tool completion data = %+v", tool.Data)

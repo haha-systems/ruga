@@ -49,35 +49,43 @@ func (tool Search) Execute(ctx context.Context, arguments json.RawMessage) ToolR
 	if err := json.Unmarshal(arguments, &input); err != nil {
 		return toolError("invalid search arguments: %v", err)
 	}
+
 	input.Query = strings.TrimSpace(input.Query)
 	if input.Query == "" {
 		return toolError("search query is required")
 	}
+
 	if input.Limit == 0 {
 		input.Limit = defaultSearchLimit
 	}
+
 	if input.Limit < 1 || input.Context < 0 {
 		return toolError("search limit must be positive and context cannot be negative")
 	}
+
 	input.Limit = min(input.Limit, maxSearchLimit)
 	input.Context = min(input.Context, maxSearchContext)
 	_, relative, err := resolvePath(tool.Root, input.Path)
 	if err != nil {
 		return ToolResult{Content: err.Error(), IsError: true}
 	}
+
 	root, err := absoluteRoot(tool.Root)
 	if err != nil {
 		return ToolResult{Content: err.Error(), IsError: true}
 	}
+
 	searchCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	args := []string{"--json", "--fixed-strings", "--line-number", "--max-columns", "800", "--max-columns-preview"}
 	if input.Context > 0 {
 		args = append(args, "--context", strconv.Itoa(input.Context))
 	}
+
 	if input.Glob != "" {
 		args = append(args, "--glob", input.Glob)
 	}
+
 	args = append(args, "--", input.Query, relative)
 	command := exec.CommandContext(searchCtx, "rg", args...)
 	command.Dir = root
@@ -85,12 +93,14 @@ func (tool Search) Execute(ctx context.Context, arguments json.RawMessage) ToolR
 	if err != nil {
 		return toolError("start search: %v", err)
 	}
+
 	var stderr limitedWriter
 	stderr.limit = 4096
 	command.Stderr = &stderr
 	if err := command.Start(); err != nil {
 		return toolError("start ripgrep: %v", err)
 	}
+
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 4096), 32*1024)
 	var output strings.Builder
@@ -103,54 +113,67 @@ func (tool Search) Execute(ctx context.Context, arguments json.RawMessage) ToolR
 			_ = command.Wait()
 			return toolError("decode ripgrep output: %v", err)
 		}
+
 		if row.Type == "match" {
 			if matches >= input.Limit {
 				truncated = true
 				_ = command.Process.Kill()
 				break
 			}
+
 			matches++
 		}
+
 		line := formatSearchRow(row)
 		if line == "" {
 			continue
 		}
+
 		if outputBytes+len(line)+1 > maxResultBytes-128 {
 			truncated = true
 			_ = command.Process.Kill()
 			break
 		}
+
 		output.WriteString(line)
 		output.WriteByte('\n')
 		outputBytes += len(line) + 1
 	}
+
 	scanErr := scanner.Err()
 	waitErr := command.Wait()
 	if scanErr != nil {
 		return toolError("read ripgrep output: %v", scanErr)
 	}
+
 	if searchCtx.Err() != nil {
 		if ctx.Err() != nil {
 			return toolError("search canceled: %v", ctx.Err())
 		}
+
 		return toolError("search timed out after 15 seconds")
 	}
+
 	if waitErr != nil && !truncated {
 		if exit, ok := waitErr.(*exec.ExitError); !ok || exit.ExitCode() != 1 {
 			message := strings.TrimSpace(stderr.String())
 			if message == "" {
 				message = waitErr.Error()
 			}
+
 			return toolError("ripgrep failed: %s", message)
 		}
 	}
+
 	if matches == 0 {
 		return ToolResult{Content: fmt.Sprintf("no matches for %q in %s", input.Query, relative)}
 	}
+
 	result := strings.TrimSpace(output.String())
 	if truncated {
 		result += "\n… [search results truncated]"
 	}
+
 	return ToolResult{Content: result}
 }
 
@@ -173,10 +196,12 @@ func formatSearchRow(row ripgrepRow) string {
 	if path == "" || text == "" {
 		return ""
 	}
+
 	separator := ":"
 	if row.Type == "context" {
 		separator = "-"
 	}
+
 	return fmt.Sprintf("%s%s%d%s %s", path, separator, row.Data.LineNumber, separator, text)
 }
 
@@ -190,5 +215,6 @@ func (w *limitedWriter) Write(value []byte) (int, error) {
 	if remaining > 0 {
 		_, _ = w.Buffer.Write(value[:min(len(value), remaining)])
 	}
+
 	return len(value), nil
 }

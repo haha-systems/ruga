@@ -49,11 +49,13 @@ func TestToolLineGrammarForCodingTools(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+
 			var model Model
 			elapsedMS := 0
 			if tt.name == "exec" {
 				elapsedMS = 2100
 			}
+
 			model.Apply(event.Event{Kind: "tool.started", ItemID: "call-1", Summary: tt.name, Data: map[string]any{"tool_name": tt.name, "arguments": string(arguments)}})
 			model.Apply(
 				event.Event{

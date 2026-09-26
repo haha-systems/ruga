@@ -41,11 +41,13 @@ func (b *Watermill) Publish(ctx context.Context, ev event.Event) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.closed {
 		return fmt.Errorf("event bus is closed")
 	}
+
 	b.queue = append(b.queue, ev)
 	b.cond.Signal()
 	return nil
@@ -56,6 +58,7 @@ func (b *Watermill) Subscribe(ctx context.Context) (<-chan event.Event, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	events := make(chan event.Event, 256)
 	go func() {
 		defer close(events)
@@ -67,12 +70,14 @@ func (b *Watermill) Subscribe(ctx context.Context) (<-chan event.Event, error) {
 				if !ok {
 					return
 				}
+
 				var ev event.Event
 				if err := json.Unmarshal(msg.Payload, &ev); err != nil {
 					slog.Error("decode application event", "error", err)
 					msg.Ack()
 					continue
 				}
+
 				select {
 				case events <- ev:
 					msg.Ack()
@@ -102,10 +107,12 @@ func (b *Watermill) dispatch() {
 		for len(b.queue) == 0 && !b.closed {
 			b.cond.Wait()
 		}
+
 		if len(b.queue) == 0 && b.closed {
 			b.mu.Unlock()
 			return
 		}
+
 		ev := b.queue[0]
 		b.queue[0] = event.Event{}
 		b.queue = b.queue[1:]
@@ -115,6 +122,7 @@ func (b *Watermill) dispatch() {
 		if err == nil {
 			err = b.pub.Publish(Topic, message.NewMessage(ev.ID, payload))
 		}
+
 		if err != nil {
 			slog.Error("publish application event", "error", err, "event_id", ev.ID)
 		}

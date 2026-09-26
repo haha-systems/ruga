@@ -15,6 +15,7 @@ func TestNewBackendSelection(t *testing.T) {
 		if err != nil {
 			t.Fatalf("newBackend(): %v", err)
 		}
+
 		if _, ok := client.(*codex.Backend); !ok {
 			t.Fatalf("backend type = %T, want *codex.Backend", client)
 		}
@@ -27,11 +28,13 @@ func TestNewBackendSelection(t *testing.T) {
 			if name != "CUSTOM_KEY" {
 				t.Errorf("environment lookup name = %q, want CUSTOM_KEY", name)
 			}
+
 			return "configured-key"
 		})
 		if err != nil {
 			t.Fatalf("newBackend(): %v", err)
 		}
+
 		if client.(*openaibackend.Backend).ModelName() != "local-model" {
 			t.Fatalf("model = %q, want local-model", client.(*openaibackend.Backend).ModelName())
 		}
@@ -56,14 +59,17 @@ func TestResolveSessionSelectsAndLoadsSessions(t *testing.T) {
 	if err := store.Save(openAI); err != nil {
 		t.Fatalf("Save(): %v", err)
 	}
+
 	latest, resumed, err := resolveSession(store, backendOptions{name: "openai", resumeLatest: true}, cwd)
 	if err != nil || !resumed || latest.ID != openAI.ID {
 		t.Fatalf("latest session = %+v, resumed=%v, err=%v", latest, resumed, err)
 	}
+
 	explicit, resumed, err := resolveSession(store, backendOptions{resumeID: openAI.ID}, cwd)
 	if err != nil || !resumed || explicit.ID != openAI.ID || explicit.Backend != "openai" {
 		t.Fatalf("explicit session = %+v, resumed=%v, err=%v", explicit, resumed, err)
 	}
+
 	if _, _, err := resolveSession(store, backendOptions{name: "codex", resumeID: openAI.ID}, cwd); err == nil {
 		t.Fatal("resolveSession() accepted a backend mismatch")
 	}
@@ -80,6 +86,7 @@ func TestApplySessionBackendOptionsReusesSavedOpenAISettings(t *testing.T) {
 	if options.openAIBaseURL != state.Provider || options.openAIModel != state.Model || options.openAIKeyEnv != state.CredentialEnv {
 		t.Fatalf("resumed OpenAI settings = %+v", options)
 	}
+
 	options = backendOptions{openAIBaseURLSet: true, openAIBaseURL: "https://override.example/v1", openAIModel: "default-model", openAIKeyEnv: "OPENAI_API_KEY"}
 	applySessionBackendOptions(&options, state, true)
 	if options.openAIBaseURL != "https://override.example/v1" || options.openAIModel != state.Model || options.openAIKeyEnv != state.CredentialEnv {

@@ -57,10 +57,12 @@ func DefaultDir() (string, error) {
 	if stateHome := os.Getenv("XDG_STATE_HOME"); stateHome != "" {
 		return filepath.Join(stateHome, "ruga", "sessions"), nil
 	}
+
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("find user home directory: %w", err)
 	}
+
 	return filepath.Join(home, ".local", "state", "ruga", "sessions"), nil
 }
 
@@ -74,17 +76,21 @@ func ShortPath(path string) string {
 	if strings.TrimSpace(path) == "" {
 		return ""
 	}
+
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return path
 	}
+
 	rel, err := filepath.Rel(home, path)
 	if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		if rel == "." {
 			return "~"
 		}
+
 		return filepath.Join("~", rel)
 	}
+
 	return path
 }
 
@@ -92,40 +98,50 @@ func (s *Store) Save(value Session) error {
 	if !validID(value.ID) {
 		return errors.New("session ID is required")
 	}
+
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
 		return fmt.Errorf("create session state directory %q: %w", s.dir, err)
 	}
+
 	if value.UpdatedAt.IsZero() {
 		value.UpdatedAt = time.Now().UTC()
 	}
+
 	data, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode session %q: %w", value.ID, err)
 	}
+
 	temp, err := os.CreateTemp(s.dir, ".session-*.tmp")
 	if err != nil {
 		return fmt.Errorf("create temporary session state: %w", err)
 	}
+
 	name := temp.Name()
 	defer os.Remove(name)
 	if err := temp.Chmod(0o600); err != nil {
 		_ = temp.Close()
 		return fmt.Errorf("secure temporary session state: %w", err)
 	}
+
 	if _, err := temp.Write(data); err != nil {
 		_ = temp.Close()
 		return fmt.Errorf("write session state: %w", err)
 	}
+
 	if err := temp.Sync(); err != nil {
 		_ = temp.Close()
 		return fmt.Errorf("sync session state: %w", err)
 	}
+
 	if err := temp.Close(); err != nil {
 		return fmt.Errorf("close temporary session state: %w", err)
 	}
+
 	if err := os.Rename(name, s.path(value.ID)); err != nil {
 		return fmt.Errorf("save session %q: %w", value.ID, err)
 	}
+
 	return nil
 }
 
@@ -133,17 +149,21 @@ func (s *Store) Load(id string) (Session, error) {
 	if !validID(id) {
 		return Session{}, errors.New("valid session ID is required")
 	}
+
 	data, err := os.ReadFile(s.path(id))
 	if err != nil {
 		return Session{}, fmt.Errorf("read session %q: %w", id, err)
 	}
+
 	var value Session
 	if err := json.Unmarshal(data, &value); err != nil {
 		return Session{}, fmt.Errorf("decode session %q: %w", id, err)
 	}
+
 	if value.ID != id || value.Backend == "" {
 		return Session{}, fmt.Errorf("session %q has invalid identity or backend", id)
 	}
+
 	return value, nil
 }
 
@@ -154,24 +174,30 @@ func (s *Store) Latest(backend, cwd string) (Session, error) {
 		if errors.Is(err, os.ErrNotExist) {
 			return Session{}, fmt.Errorf("no %s session found for %s", backend, cwd)
 		}
+
 		return Session{}, fmt.Errorf("list sessions: %w", err)
 	}
+
 	var matches []Session
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
+
 		value, err := s.Load(strings.TrimSuffix(entry.Name(), ".json"))
 		if err != nil {
 			continue
 		}
+
 		if value.Backend == backend && filepath.Clean(value.CWD) == filepath.Clean(cwd) {
 			matches = append(matches, value)
 		}
 	}
+
 	if len(matches) == 0 {
 		return Session{}, fmt.Errorf("no %s session found for %s", backend, cwd)
 	}
+
 	sort.Slice(matches, func(i, j int) bool { return matches[i].UpdatedAt.After(matches[j].UpdatedAt) })
 	return matches[0], nil
 }

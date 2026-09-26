@@ -88,6 +88,7 @@ func (item TelemetryItem) Matches(query string) bool {
 	for _, detail := range item.Details {
 		parts = append(parts, detail.Label, detail.Value)
 	}
+
 	return matches(query, strings.Join(parts, " "), "", item.Events)
 }
 
@@ -96,14 +97,17 @@ func matches(query, primary, secondary string, events []event.Event) bool {
 	if query == "" {
 		return true
 	}
+
 	if strings.Contains(strings.ToLower(primary+" "+secondary), query) {
 		return true
 	}
+
 	for _, ev := range events {
 		if strings.Contains(strings.ToLower(ev.Kind+" "+ev.Source+" "+ev.Summary), query) {
 			return true
 		}
 	}
+
 	return false
 }
 
@@ -146,6 +150,7 @@ func (m *Model) Apply(ev event.Event) {
 	if name := modelName(ev); name != "" {
 		m.Activity.Model = name
 	}
+
 	switch ev.Kind {
 	case "user.message":
 		m.appendConversation(ConversationItem{Kind: ConversationUser, Text: ev.Summary, Role: RoleNavigation, TurnID: ev.TurnID, ItemID: ev.ItemID, Events: []event.Event{ev}})
@@ -188,11 +193,13 @@ func (m *Model) finishActive(turnID string) {
 		if (item.Kind != TelemetryTool && item.Kind != TelemetryCommand) || item.State != RoleActive || turnID != "" && item.TurnID != turnID {
 			continue
 		}
+
 		if m.Activity.TurnStatus == "error" {
 			item.State, item.Status = RoleFailure, "failed"
 		} else {
 			item.State, item.Status = RoleWarning, "stopped"
 		}
+
 		item.updateLine()
 	}
 }
@@ -208,6 +215,7 @@ func messageKey(ev event.Event) string {
 	if ev.ItemID != "" {
 		return "item:" + ev.ItemID
 	}
+
 	return "turn:" + ev.TurnID
 }
 
@@ -218,18 +226,22 @@ func (m *Model) assistantMessage(ev event.Event, completed bool) {
 		if ev.Summary == "" {
 			return
 		}
+
 		index = m.appendConversation(ConversationItem{Kind: ConversationAssistant, Role: RoleSuccess, TurnID: ev.TurnID, ItemID: ev.ItemID})
 		if m.activeMessages == nil {
 			m.activeMessages = make(map[string]int)
 		}
+
 		m.activeMessages[key] = index
 	}
+
 	item := &m.Conversation[index]
 	item.Events = append(item.Events, ev)
 	if completed {
 		if ev.Summary != "" {
 			item.Text = ev.Summary
 		}
+
 		delete(m.activeMessages, key)
 	} else {
 		item.Text += ev.Summary
@@ -241,6 +253,7 @@ func (m *Model) reasoning(ev event.Event) {
 		m.operational(ev)
 		return
 	}
+
 	key := "reasoning:" + ev.ItemID
 	if ev.ItemID != "" {
 		if index, found := m.activeMessages[key]; found {
@@ -250,15 +263,18 @@ func (m *Model) reasoning(ev event.Event) {
 			} else {
 				item.Text += ev.Summary
 			}
+
 			item.Events = append(item.Events, ev)
 			return
 		}
 	}
+
 	index := m.appendConversation(ConversationItem{Kind: ConversationReasoning, Role: RoleReasoning, Text: ev.Summary, TurnID: ev.TurnID, ItemID: ev.ItemID, Events: []event.Event{ev}})
 	if ev.ItemID != "" {
 		if m.activeMessages == nil {
 			m.activeMessages = make(map[string]int)
 		}
+
 		m.activeMessages[key] = index
 	}
 }
@@ -276,14 +292,17 @@ func (m *Model) operational(ev event.Event) {
 			if m.activeTelemetry == nil {
 				m.activeTelemetry = make(map[string]int)
 			}
+
 			m.activeTelemetry[key] = index
 		}
 	}
+
 	item := &m.Telemetry[index]
 	item.Events = append(item.Events, ev)
 	if ev.Kind != "command.output" && ev.Summary != "" {
 		item.Summary = ev.Summary
 	}
+
 	if ev.Kind == "command.output" {
 		for _, detail := range details(ev) {
 			appendOutput(item, detail)
@@ -291,22 +310,28 @@ func (m *Model) operational(ev event.Event) {
 	} else if ev.Kind != "command.completed" || !hasOutput(item.Details) {
 		item.Details = append(item.Details, details(ev)...)
 	}
+
 	if kind == TelemetryOther && ev.Kind == "backend.unknown" {
 		item.Summary = "Unrecognized activity"
 	}
+
 	item.State, item.Status = state(ev)
 	if ev.Kind == "command.output" || ev.Kind == "tool.progress" {
 		item.State, item.Status = RoleActive, "running"
 	}
+
 	if (ev.Kind == "tool.started" || ev.Kind == "command.started") && !found {
 		m.Activity.ActiveTools++
 	}
+
 	if ev.Kind == "tool.completed" || ev.Kind == "command.completed" {
 		if found && m.Activity.ActiveTools > 0 {
 			m.Activity.ActiveTools--
 		}
+
 		delete(m.activeTelemetry, key)
 	}
+
 	item.updateLine()
 	m.Activity.Latest = item.Type
 }
@@ -318,6 +343,7 @@ func appendOutput(item *TelemetryItem, incoming Detail) {
 			return
 		}
 	}
+
 	item.Details = append(item.Details, incoming)
 }
 
@@ -327,6 +353,7 @@ func hasOutput(details []Detail) bool {
 			return true
 		}
 	}
+
 	return false
 }
 
@@ -337,15 +364,19 @@ func telemetryKey(ev event.Event, kind TelemetryKind) string {
 			return string(kind) + ":" + ev.TurnID + ":" + ev.ItemID
 		}
 	}
+
 	if kind == TelemetryApproval && ev.Approval != nil && ev.Approval.RequestID != "" {
 		return "approval:" + ev.Approval.RequestID
 	}
+
 	if kind == TelemetryUsage {
 		return "usage"
 	}
+
 	if kind == TelemetryTurn && ev.TurnID != "" {
 		return "turn:" + ev.TurnID
 	}
+
 	return ""
 }
 
@@ -381,13 +412,16 @@ func toolLabel(ev event.Event) string {
 			name = fields[0]
 		}
 	}
+
 	if name == "" {
 		return "Tool"
 	}
+
 	name = strings.TrimSuffix(name, ":")
 	if slash := strings.LastIndex(name, "/"); slash >= 0 {
 		name = name[slash+1:]
 	}
+
 	return "Tool · " + name
 }
 
@@ -396,6 +430,7 @@ func toolRole(ev event.Event) SemanticRole {
 	if name == "" {
 		name = ev.Summary
 	}
+
 	name = strings.ToLower(name)
 	switch {
 	case strings.Contains(name, "search"), strings.Contains(name, "read"):
@@ -423,21 +458,25 @@ func state(ev event.Event) (SemanticRole, string) {
 		if ev.Decision == event.ApprovalReject {
 			return RoleWarning, "rejected"
 		}
+
 		return RoleSuccess, "accepted"
 
 	case "turn.completed":
 		if turnStatus(ev) == "interrupted" {
 			return RoleWarning, "interrupted"
 		}
+
 		if failed(ev) {
 			return RoleFailure, "failed"
 		}
+
 		return RoleSuccess, "done"
 
 	case "tool.completed", "command.completed":
 		if failed(ev) {
 			return RoleFailure, "failed"
 		}
+
 		return RoleSuccess, "done"
 
 	default:
@@ -449,9 +488,11 @@ func failed(ev event.Event) bool {
 	if isError, _ := ev.Data["error"].(bool); isError {
 		return true
 	}
+
 	if status, _ := ev.Data["status"].(string); status == "failed" || status == "error" {
 		return true
 	}
+
 	switch exit := ev.Data["exit_code"].(type) {
 	case int:
 		if exit != 0 {
@@ -463,6 +504,7 @@ func failed(ev event.Event) bool {
 			return true
 		}
 	}
+
 	return strings.Contains(strings.ToLower(ev.Summary), "failed") || strings.Contains(strings.ToLower(ev.Summary), "exit 1")
 }
 
@@ -473,6 +515,7 @@ func details(ev event.Event) []Detail {
 		if stream == "" {
 			stream = "stdout"
 		}
+
 		return []Detail{{Label: stream, Value: ev.Summary}}
 
 	case "tool.progress":
@@ -497,6 +540,7 @@ func details(ev event.Event) []Detail {
 			return []Detail{{Label: "change", Value: ev.Summary}}
 		}
 	}
+
 	return nil
 }
 
@@ -518,5 +562,6 @@ func modelName(ev event.Event) string {
 			return strings.TrimSpace(value)
 		}
 	}
+
 	return ""
 }

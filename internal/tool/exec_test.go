@@ -13,8 +13,10 @@ func TestExecBoundsOutputAndReportsExitStatus(t *testing.T) {
 	}))
 	if !result.IsError || !strings.Contains(result.Content, "exit 7") || !strings.Contains(result.Content, "output bytes omitted") || !strings.Contains(result.Content, "HEAD") ||
 		!strings.Contains(result.Content, "TAIL") {
+
 		t.Fatalf("bounded command result = %+v", result)
 	}
+
 	if len(result.Content) > maxResultBytes {
 		t.Fatalf("command result exceeded global limit: %d bytes", len(result.Content))
 	}

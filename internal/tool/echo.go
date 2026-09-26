@@ -29,5 +29,6 @@ func (Echo) Execute(_ context.Context, arguments json.RawMessage) ToolResult {
 	if err := json.Unmarshal(arguments, &input); err != nil {
 		return ToolResult{Content: "invalid echo arguments: " + err.Error(), IsError: true}
 	}
+
 	return ToolResult{Content: input.Text}
 }

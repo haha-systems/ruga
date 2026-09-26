@@ -24,14 +24,17 @@ func TestTimelineFollowsOnlyWhenAlreadyAtBottom(t *testing.T) {
 	for i := range 10 {
 		m.add(event.Event{Kind: "user.message", Summary: strings.Repeat("line ", 5) + string(rune('a'+i))})
 	}
+
 	m.refresh(true)
 	if !m.viewport.AtBottom() {
 		t.Fatal("timeline should start at the bottom")
 	}
+
 	m.viewport.LineUp(2)
 	if m.viewport.AtBottom() {
 		t.Fatal("expected manual scroll to move away from the bottom")
 	}
+
 	m.add(event.Event{Kind: "user.message", Summary: "new event"})
 	m.refresh(m.viewport.AtBottom())
 	if m.viewport.AtBottom() {
@@ -47,10 +50,12 @@ func TestReplayFixtureDrivesTimelineDeterministically(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	fixture := "../recording/testdata/coding-session.jsonl"
 	if err := recording.Replay(ctx, eventBus, fixture); err != nil {
 		t.Fatal(err)
 	}
+
 	if err := eventBus.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -66,12 +71,15 @@ func TestReplayFixtureDrivesTimelineDeterministically(t *testing.T) {
 			t.Fatal("timed out waiting for replay fixture")
 		}
 	}
+
 	if len(m.presentation.Conversation) != 2 || m.presentation.Conversation[1].Text != "Ruga uses a normalized event bus." || len(m.presentation.Telemetry) != 1 {
 		t.Fatalf("fixture presentation = %+v", m.presentation)
 	}
+
 	if m.status != "idle" || m.turnActive {
 		t.Fatalf("fixture turn status = %q active=%v", m.status, m.turnActive)
 	}
+
 	m.refresh(true)
 	if view := m.viewport.View(); !strings.Contains(view, "Ruga uses a normalized event bus.") {
 		t.Fatalf("replayed assistant response missing from timeline: %q", view)
@@ -84,6 +92,7 @@ func TestReadOnlyReplayKeepsTimelineFocusAndIgnoresInterrupt(t *testing.T) {
 	if m.focus != focusTimeline {
 		t.Fatalf("read-only focus = %v, want timeline", m.focus)
 	}
+
 	updated, cmd := m.updateKey(tea.KeyMsg{Type: tea.KeyCtrlX})
 	got := updated.(model)
 	if cmd != nil || !got.turnActive || got.interrupting {
@@ -97,9 +106,11 @@ func TestCompletedReplayStaysOpenForInspection(t *testing.T) {
 	if _, ok := waitBatch(stream, true)().(streamClosedMsg); !ok {
 		t.Fatal("completed replay should stay open for inspection")
 	}
+
 	if _, ok := waitBatch(stream, false)().(tea.QuitMsg); !ok {
 		t.Fatal("closed live stream should quit")
 	}
+
 	m := interactiveTestModel()
 	m.readOnly = true
 	updated, cmd := m.Update(streamClosedMsg{})
@@ -127,13 +138,16 @@ func TestEnterSubmitsComposerValue(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("Enter did not schedule a submission")
 	}
+
 	msg := cmd()
 	if _, ok := msg.(submitResultMsg); !ok {
 		t.Fatalf("submission command returned %T", msg)
 	}
+
 	if submitted != "explain this repository" {
 		t.Fatalf("submitted prompt = %q", submitted)
 	}
+
 	if updated.(model).status != "working" {
 		t.Fatalf("status after submission = %q", updated.(model).status)
 	}
@@ -144,6 +158,7 @@ func TestDeltaEventsCoalesceInTimeline(t *testing.T) {
 	for _, part := range []string{"Cod", "ex", " works"} {
 		m.add(event.Event{Kind: "message.delta", ItemID: "item-1", Summary: part, Timestamp: time.Now()})
 	}
+
 	if len(m.presentation.Conversation) != 1 || m.presentation.Conversation[0].Text != "Codex works" || len(m.presentation.Conversation[0].Events) != 3 {
 		t.Fatalf("coalesced conversation = %+v", m.presentation.Conversation)
 	}
@@ -158,13 +173,16 @@ func TestCommandOutputIsBoundedAndLifecycleUpdatesInPlace(t *testing.T) {
 	if len(m.presentation.Telemetry) != 1 {
 		t.Fatalf("command lifecycle created %d telemetry entries, want 1", len(m.presentation.Telemetry))
 	}
+
 	entry := m.presentation.Telemetry[0]
 	if entry.Summary != "go test ./... · exit 1" || len(entry.Events) != 3 {
 		t.Fatalf("completed command = %+v", entry)
 	}
+
 	if len(entry.Details) != 1 || len(entry.Details[0].Value) != outputSize {
 		t.Fatal("presentation discarded command output")
 	}
+
 	m.viewport = viewport.New(100, 20)
 	m.telemetryViewport = viewport.New(100, 20)
 	m.ready = true
@@ -172,6 +190,7 @@ func TestCommandOutputIsBoundedAndLifecycleUpdatesInPlace(t *testing.T) {
 	if view := m.telemetryViewport.View(); strings.Contains(view, "stderr:") {
 		t.Fatalf("normal telemetry should stay compact: %q", view)
 	}
+
 	if copied := m.copyTelemetry(); !strings.Contains(copied, strings.Repeat("x", outputSize)) {
 		t.Fatalf("telemetry copy lost the complete command output")
 	}
@@ -185,6 +204,7 @@ func TestCommandOutputPreservesUTF8Boundary(t *testing.T) {
 	if m.presentation.Telemetry[0].Details[0].Value != full {
 		t.Fatal("presentation lost UTF-8 command output")
 	}
+
 	display := strings.Join(m.expandedTelemetryLines(m.presentation.Telemetry[0], 60), "\n")
 	if !utf8.ValidString(display) || !strings.Contains(display, "bytes omitted") {
 		t.Fatalf("expanded UTF-8 output was malformed or unbounded: %q", display[len(display)-min(200, len(display)):])
@@ -214,9 +234,11 @@ func TestFirstClassEventsRemainReadable(t *testing.T) {
 	} {
 		m.add(ev)
 	}
+
 	if len(m.presentation.Telemetry) != 3 || len(m.presentation.Conversation) != 1 {
 		t.Fatalf("file, tool, usage, and status reduction = %+v", m.presentation)
 	}
+
 	m.refresh(true)
 	view := m.telemetryViewport.View()
 	for _, want := range []string{"Δ PATCH", "internal/ui/app.go", "⌕ SEARCH", "docs/search · succeeded", "USAGE", "50 total tokens"} {
@@ -224,8 +246,10 @@ func TestFirstClassEventsRemainReadable(t *testing.T) {
 			t.Errorf("telemetry rendering %q does not contain %q", view, want)
 		}
 	}
+
 	if conversation := m.viewport.View(); !strings.Contains(conversation, "Checking the build") || strings.Contains(conversation, "internal/ui/app.go") ||
 		strings.Contains(conversation, "docs/search") {
+
 		t.Fatalf("conversation contains operational telemetry: %q", conversation)
 	}
 }
@@ -238,9 +262,11 @@ func TestSemanticTelemetryTruncatesDisplayButCopyKeepsFullText(t *testing.T) {
 	if view := m.telemetryViewport.View(); !strings.Contains(view, "…") || strings.Contains(view, full) {
 		t.Fatalf("telemetry display did not truncate: %q", view)
 	}
+
 	if copied := m.copyTimeline(); !strings.Contains(copied, full) {
 		t.Fatalf("copy lost full telemetry summary: %q", copied)
 	}
+
 	if m.presentation.Telemetry[0].Summary != full {
 		t.Fatal("presentation model truncated the source text")
 	}
@@ -254,24 +280,29 @@ func TestInspectorTogglePreservesIndependentViewportPositions(t *testing.T) {
 	if !m.showTelemetry || !strings.Contains(m.View(), "EVENT STREAM") {
 		t.Fatal("Ctrl+E did not open the event inspector")
 	}
+
 	for i := range 18 {
 		m.add(event.Event{Kind: "user.message", Summary: fmt.Sprintf("chat row %d", i)})
 		m.add(event.Event{Kind: "tool.started", ItemID: fmt.Sprintf("tool-%d", i), Summary: fmt.Sprintf("search row %d", i)})
 	}
+
 	m.refreshViews(true, true)
 	if !m.viewport.AtBottom() || !m.telemetryViewport.AtBottom() {
 		t.Fatal("new conversation and telemetry should initially follow")
 	}
+
 	m.telemetryViewport.LineUp(3)
 	if m.telemetryViewport.AtBottom() {
 		t.Fatal("manual telemetry scroll did not move away from the bottom")
 	}
+
 	m.add(event.Event{Kind: "user.message", Summary: "latest chat"})
 	m.add(event.Event{Kind: "tool.started", ItemID: "new-tool", Summary: "new search"})
 	m.refreshViews(m.viewport.AtBottom(), m.telemetryViewport.AtBottom())
 	if !m.viewport.AtBottom() || m.telemetryViewport.AtBottom() {
 		t.Fatal("new activity forced the scrolled telemetry viewport to follow")
 	}
+
 	offset := m.telemetryViewport.YOffset
 	m.setFocus(focusTelemetry)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
@@ -279,6 +310,7 @@ func TestInspectorTogglePreservesIndependentViewportPositions(t *testing.T) {
 	if m.showTelemetry || m.focus == focusTelemetry || strings.Contains(m.View(), "EVENT STREAM") {
 		t.Fatal("Ctrl+E did not hide the inspector and restore focus")
 	}
+
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
 	m = settlePanel(t, updated.(model))
 	if !m.showTelemetry || m.telemetryViewport.YOffset != offset {
@@ -297,6 +329,7 @@ func TestNarrowInspectorUsesFullWidthAndKeepsConversation(t *testing.T) {
 	if !strings.Contains(m.View(), "EVENT STREAM") || strings.Contains(m.View(), "keep this message") {
 		t.Fatalf("narrow inspector layout = %q", m.View())
 	}
+
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
 	m = updated.(model)
 	if !strings.Contains(m.View(), "keep this message") {
@@ -317,6 +350,7 @@ func TestSmallTerminalKeepsEveryRenderedLineWithinWidth(t *testing.T) {
 			m.setFocus(focusTelemetry)
 			m.toggleTelemetryExpansion()
 		}
+
 		for _, line := range strings.Split(m.View(), "\n") {
 			if width := lipgloss.Width(line); width > 25 {
 				t.Fatalf("line width %d exceeds terminal width: %q", width, line)
@@ -333,28 +367,33 @@ func TestPanelAnimationCanReverseWhileEventsKeepArriving(t *testing.T) {
 	if cmd == nil || !m.panelAnimating || m.panelWidth != 0 {
 		t.Fatal("opening the inspector did not schedule a transition")
 	}
+
 	openingGeneration := m.panelGeneration
 	updated, _ = m.Update(panelFrameMsg{generation: openingGeneration})
 	m = updated.(model)
 	if m.panelWidth <= 0 || m.panelWidth >= desiredPanelWidth(m.width) {
 		t.Fatalf("first transition width = %d", m.panelWidth)
 	}
+
 	updated, _ = m.Update(batchMsg{{Kind: "user.message", Summary: "arrived during motion"}})
 	m = updated.(model)
 	if len(m.presentation.Conversation) != 1 {
 		t.Fatal("animation blocked event reduction")
 	}
+
 	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
 	m = updated.(model)
 	if cmd == nil || m.showTelemetry || m.panelGeneration == openingGeneration {
 		t.Fatal("closing during an opening transition was not scheduled")
 	}
+
 	staleWidth := m.panelWidth
 	updated, _ = m.Update(panelFrameMsg{generation: openingGeneration})
 	m = updated.(model)
 	if m.panelWidth != staleWidth {
 		t.Fatal("stale animation frame changed panel width")
 	}
+
 	m = settlePanel(t, m)
 	if m.panelWidth != 0 || !strings.Contains(m.View(), "arrived during motion") {
 		t.Fatal("reversed transition lost conversation or left the panel visible")
@@ -372,15 +411,18 @@ func TestHiddenActivityIndicatorTicksOnlyForActiveTools(t *testing.T) {
 	if cmd == nil || !m.activityTicking || m.presentation.Activity.ActiveTools != 1 || m.unseenTelemetry != 2 {
 		t.Fatalf("active hidden activity = %+v, unseen=%d", m.presentation.Activity, m.unseenTelemetry)
 	}
+
 	if header := m.headerLine(); !strings.Contains(header, "LOG 2 +2") || !strings.Contains(header, "SEARCH") || !strings.Contains(header, "◐") {
 		t.Fatalf("hidden activity indicator = %q", header)
 	}
+
 	activeGeneration := m.activityGeneration
 	updated, cmd = m.Update(activityFrameMsg{generation: activeGeneration})
 	m = updated.(model)
 	if cmd == nil || m.activityFrame != 1 || !strings.Contains(m.headerLine(), "◓") {
 		t.Fatal("active tool did not advance its restrained indicator")
 	}
+
 	updated, _ = m.Update(batchMsg{
 		{Kind: "tool.completed", TurnID: "turn-1", ItemID: "tool-1", Summary: "search · succeeded", Data: map[string]any{"tool_name": "search"}},
 		{Kind: "turn.completed", TurnID: "turn-1", Data: map[string]any{"status": "completed"}},
@@ -389,6 +431,7 @@ func TestHiddenActivityIndicatorTicksOnlyForActiveTools(t *testing.T) {
 	if m.activityTicking || m.presentation.Activity.ActiveTools != 0 {
 		t.Fatal("activity animation continued after tools completed")
 	}
+
 	updated, cmd = m.Update(activityFrameMsg{generation: activeGeneration})
 	if cmd != nil || updated.(model).activityFrame != m.activityFrame {
 		t.Fatal("stale activity frame changed an idle view")
@@ -402,6 +445,7 @@ func TestUnseenTelemetryWaitsForExplicitFollow(t *testing.T) {
 	for i := range 20 {
 		m.add(event.Event{Kind: "tool.started", ItemID: fmt.Sprintf("tool-%d", i), Summary: "search"})
 	}
+
 	m.refreshViews(true, true)
 	m.setFocus(focusTelemetry)
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
@@ -409,11 +453,13 @@ func TestUnseenTelemetryWaitsForExplicitFollow(t *testing.T) {
 	if m.telemetryFollowing || m.telemetryViewport.AtBottom() {
 		t.Fatal("PageUp did not suspend telemetry follow")
 	}
+
 	updated, _ = m.Update(batchMsg{{Kind: "tool.started", ItemID: "new-tool", Summary: "read"}})
 	m = updated.(model)
 	if m.unseenTelemetry != 1 || m.telemetryViewport.AtBottom() || !strings.Contains(m.viewHeading(), "+1") {
 		t.Fatal("new telemetry did not remain unseen while scrolled away")
 	}
+
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnd})
 	m = updated.(model)
 	if m.unseenTelemetry != 0 || !m.telemetryFollowing || !m.telemetryViewport.AtBottom() {
@@ -434,31 +480,38 @@ func TestTelemetrySelectionExpandsInlineAndRevealsTruncatedText(t *testing.T) {
 	if m.selectedTelemetry != 1 {
 		t.Fatalf("initial selection = %d, want latest item", m.selectedTelemetry)
 	}
+
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyUp})
 	m = updated.(model)
 	if m.selectedTelemetry != 0 || m.telemetryFollowing {
 		t.Fatalf("selection/follow after Up = %d/%v", m.selectedTelemetry, m.telemetryFollowing)
 	}
+
 	compact := m.telemetryViewport.View()
 	if !strings.Contains(compact, "…") || strings.Contains(compact, query) {
 		t.Fatalf("compact line did not truncate the long query: %q", compact)
 	}
+
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(model)
 	if !m.expandedTelemetry[0] {
 		t.Fatal("Enter did not expand selected item")
 	}
+
 	if expanded := m.telemetryViewport.View(); !strings.Contains(expanded, "query") || !strings.Contains(expanded, query[:30]) || !strings.Contains(expanded, "6 hits") {
 		t.Fatalf("expanded telemetry omitted details: %q", expanded)
 	}
+
 	if m.presentation.Telemetry[0].Primary != fmt.Sprintf("%q", query) {
 		t.Fatal("compact truncation changed the stored primary value")
 	}
+
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(model)
 	if m.expandedTelemetry[0] {
 		t.Fatal("Enter did not collapse selected item")
 	}
+
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnd})
 	m = updated.(model)
 	if m.selectedTelemetry != 1 || !m.telemetryFollowing || !m.telemetryViewport.AtBottom() {
@@ -479,9 +532,11 @@ func TestExpandedCommandOutputIsBoundedOnlyForDisplay(t *testing.T) {
 	if content := m.telemetryViewport.View(); !strings.Contains(content, "stderr") {
 		t.Fatalf("expanded command output is missing: %q", content)
 	}
+
 	if !strings.Contains(m.copyTelemetry(), full) || m.presentation.Telemetry[0].Details[0].Value != full {
 		t.Fatal("expanded display limit discarded command output")
 	}
+
 	if len(m.telemetryViewport.View()) > 2000 {
 		t.Fatal("viewport rendered unbounded command output")
 	}
@@ -515,9 +570,11 @@ func TestInterruptMarksActiveCommandsAndToolsComplete(t *testing.T) {
 	if m.status != "interrupted" || m.turnActive {
 		t.Fatalf("interrupted turn state = %q active=%v", m.status, m.turnActive)
 	}
+
 	if m.presentation.Telemetry[0].Status != "stopped" || m.presentation.Telemetry[0].DisplayStatus != "! STOPPED" {
 		t.Fatalf("command after interrupt = %+v", m.presentation.Telemetry[0])
 	}
+
 	if m.presentation.Telemetry[1].Status != "stopped" || m.presentation.Telemetry[1].DisplayStatus != "! STOPPED" {
 		t.Fatalf("tool after interrupt = %+v", m.presentation.Telemetry[1])
 	}
@@ -537,20 +594,24 @@ func TestApprovalTakesFocusAndAcceptsWithY(t *testing.T) {
 	if m.focus != focusApproval || len(m.approvals) != 1 {
 		t.Fatalf("approval focus/state = %v/%+v", m.focus, m.approvals)
 	}
+
 	view := m.View()
 	for _, want := range []string{"APPROVAL REQUIRED", "rm -i cache.tmp", "outside workspace", "y/enter accept"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("approval prompt does not contain %q: %q", want, view)
 		}
 	}
+
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
 	if cmd == nil {
 		t.Fatal("y did not resolve the active approval")
 	}
+
 	msg := cmd()
 	if _, ok := msg.(approvalResultMsg); !ok {
 		t.Fatalf("approval command returned %T", msg)
 	}
+
 	m = updated.(model)
 	if gotID != "approval-1" || gotDecision != event.ApprovalAccept || !m.submitting[gotID] {
 		t.Fatalf("approval action = %q %q, submitting=%v", gotID, gotDecision, m.submitting)
@@ -574,6 +635,7 @@ func TestApprovalCanRejectWithNOrEscape(t *testing.T) {
 		if cmd == nil {
 			t.Fatalf("key %s did not schedule rejection", key.String())
 		}
+
 		cmd()
 		if got != event.ApprovalReject {
 			t.Fatalf("key %s decision = %q, want reject", key.String(), got)
@@ -588,6 +650,7 @@ func TestApprovalResolutionClearsPromptAndRestoresComposerFocus(t *testing.T) {
 	if m.focus != focusApproval || len(m.approvals) != 1 {
 		t.Fatal("approval request did not activate its prompt")
 	}
+
 	m.add(event.Event{
 		Kind: "approval.resolved", Approval: &event.ApprovalRequest{RequestID: request.RequestID},
 		Decision: event.ApprovalAccept,
@@ -602,34 +665,40 @@ func TestKeyboardFocusSeparatesComposerFromTimelineAndApproval(t *testing.T) {
 	for i := range 12 {
 		m.add(event.Event{Kind: "user.message", Summary: strings.Repeat("row ", 8) + string(rune('a'+i))})
 	}
+
 	m.refresh(true)
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
 	m = updated.(model)
 	if m.focus != focusTimeline || m.input.Focused() {
 		t.Fatalf("Tab did not move focus to timeline: focus=%v input=%v", m.focus, m.input.Focused())
 	}
+
 	m.viewport.GotoBottom()
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 	m = updated.(model)
 	if m.viewport.AtBottom() {
 		t.Fatal("Up did not scroll the focused timeline")
 	}
+
 	request := event.ApprovalRequest{RequestID: "approval-focus", Kind: "permissions", Permissions: []string{"network"}}
 	updated, _ = m.Update(batchMsg{{Kind: "approval.requested", Approval: &request}})
 	m = updated.(model)
 	if m.focus != focusApproval || m.input.Focused() {
 		t.Fatal("approval request did not take keyboard focus")
 	}
+
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
 	m = updated.(model)
 	if m.input.Value() != "" {
 		t.Fatalf("approval shortcut leaked into composer: %q", m.input.Value())
 	}
+
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
 	m = updated.(model)
 	if m.focus != focusComposer || !m.input.Focused() {
 		t.Fatal("Tab from approval focus did not return to composer")
 	}
+
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
 	m = updated.(model)
 	if m.input.Value() != "y" {
@@ -644,6 +713,7 @@ func TestTimelineNavigationBindings(t *testing.T) {
 	for i := range 20 {
 		m.add(event.Event{Kind: "user.message", Summary: fmt.Sprintf("row %d", i)})
 	}
+
 	m.refresh(true)
 	for _, tt := range []struct {
 		name string
@@ -661,15 +731,18 @@ func TestTimelineNavigationBindings(t *testing.T) {
 			if tt.top && current.viewport.YOffset != 0 {
 				t.Fatalf("YOffset = %d, want top", current.viewport.YOffset)
 			}
+
 			if !tt.top && !current.viewport.AtBottom() {
 				t.Fatalf("key %s did not move timeline to bottom", tt.key.String())
 			}
 		})
 	}
+
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
 	if updated.(model).viewport.AtBottom() {
 		t.Fatal("PageUp did not scroll up")
 	}
+
 	updated, _ = updated.(model).Update(tea.KeyMsg{Type: tea.KeyPgDown})
 	if !updated.(model).viewport.AtBottom() {
 		t.Fatal("PageDown did not return to the bottom")
@@ -689,14 +762,17 @@ func TestCtrlXInterruptsAndCtrlCQuits(t *testing.T) {
 	if cmd == nil || updated.(model).status != "interrupting" {
 		t.Fatal("Ctrl+X did not enter interrupting state")
 	}
+
 	cmd()
 	if !interrupted {
 		t.Fatal("Ctrl+X did not call the backend interrupt action")
 	}
+
 	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 	if _, ok := cmd().(tea.QuitMsg); !ok {
 		t.Fatal("Ctrl+C did not quit")
 	}
+
 	if updated.(model).turnActive != m.turnActive {
 		t.Fatal("Ctrl+C unexpectedly changed turn state")
 	}
@@ -727,8 +803,10 @@ func settlePanel(t *testing.T, m model) model {
 		updated, _ := m.Update(panelFrameMsg{generation: m.panelGeneration})
 		m = updated.(model)
 	}
+
 	if m.panelAnimating {
 		t.Fatalf("panel animation did not settle: width=%d position=%f", m.panelWidth, m.panelPosition)
 	}
+
 	return m
 }

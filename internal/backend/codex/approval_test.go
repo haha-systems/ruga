@@ -94,24 +94,30 @@ func TestApprovalRequestsWaitForApplicationDecision(t *testing.T) {
 			if requested.Kind != "approval.requested" || requested.Approval == nil {
 				t.Fatalf("request event = %+v", requested)
 			}
+
 			if requested.Approval.Kind != tt.wantKind || !containsApprovalDetail(*requested.Approval, tt.wantPart) {
 				t.Fatalf("approval details = %+v", requested.Approval)
 			}
+
 			if tt.wantThread && requested.ThreadID != "th-1" {
 				t.Fatalf("ThreadID = %q, want th-1", requested.ThreadID)
 			}
+
 			if err := backend.ResolveApproval(context.Background(), requested.Approval.RequestID, tt.decision); err != nil {
 				t.Fatalf("ResolveApproval(): %v", err)
 			}
+
 			resolved := receiveApprovalEvent(t, bus.events)
 			if resolved.Kind != "approval.resolved" || resolved.Decision != tt.decision || resolved.Approval.RequestID != requested.Approval.RequestID {
 				t.Fatalf("resolution event = %+v", resolved)
 			}
+
 			select {
 			case result := <-response:
 				if result.err != nil {
 					t.Fatalf("HandleServerRequest(): %v", result.err)
 				}
+
 				if string(result.value.Result) != tt.wantJSON {
 					t.Fatalf("result = %s, want %s", result.value.Result, tt.wantJSON)
 				}
@@ -138,16 +144,19 @@ func containsApprovalDetail(request event.ApprovalRequest, value string) bool {
 	if request.Command == value || request.Tool == value || request.Reason == value || request.GrantRoot == value || request.Scope == value {
 		return true
 	}
+
 	for _, path := range request.FilePaths {
 		if path == value {
 			return true
 		}
 	}
+
 	for _, permission := range request.Permissions {
 		if permission == value {
 			return true
 		}
 	}
+
 	return false
 }
 
@@ -163,11 +172,13 @@ func (t *interruptTestTransport) Call(_ context.Context, method string, params, 
 	if err != nil {
 		return err
 	}
+
 	t.mu.Lock()
 	t.calls = append(t.calls, method)
 	if t.params == nil {
 		t.params = make(map[string]json.RawMessage)
 	}
+
 	t.params[method] = data
 	t.mu.Unlock()
 	return nil
@@ -195,6 +206,7 @@ func TestInterruptTargetsActiveTurn(t *testing.T) {
 	if err := backend.Interrupt(context.Background()); err != nil {
 		t.Fatalf("Interrupt(): %v", err)
 	}
+
 	transport.mu.Lock()
 	params := append(json.RawMessage(nil), transport.params["turn/interrupt"]...)
 	transport.mu.Unlock()
@@ -205,9 +217,11 @@ func TestInterruptTargetsActiveTurn(t *testing.T) {
 	if err := json.Unmarshal(params, &request); err != nil {
 		t.Fatal(err)
 	}
+
 	if request.ThreadID != "thread-1" || request.TurnID != "turn-2" {
 		t.Fatalf("interrupt target = %+v", request)
 	}
+
 	select {
 	case decision := <-pending:
 		if decision != event.ApprovalReject {
@@ -217,6 +231,7 @@ func TestInterruptTargetsActiveTurn(t *testing.T) {
 	default:
 		t.Fatal("interrupt did not reject a pending approval")
 	}
+
 	if resolved := receiveApprovalEvent(t, bus.events); resolved.Kind != "approval.resolved" || resolved.Decision != event.ApprovalReject {
 		t.Fatalf("interrupt resolution event = %+v", resolved)
 	}
@@ -243,10 +258,12 @@ func TestCanceledApprovalIsRemovedAndResolved(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("canceled approval handler did not return")
 	}
+
 	resolved := receiveApprovalEvent(t, bus.events)
 	if resolved.Kind != "approval.resolved" || resolved.Decision != event.ApprovalReject || resolved.Approval.RequestID != requested.Approval.RequestID {
 		t.Fatalf("cancellation resolution event = %+v", resolved)
 	}
+
 	backend.mu.Lock()
 	pending := len(backend.pendingApprovals)
 	backend.mu.Unlock()

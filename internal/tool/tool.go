@@ -72,6 +72,7 @@ func NewRegistry(tools ...Tool) (*Registry, error) {
 			return nil, err
 		}
 	}
+
 	return registry, nil
 }
 
@@ -83,22 +84,27 @@ func (r *Registry) Register(registered Tool) error {
 	if registered == nil {
 		return fmt.Errorf("tool is required")
 	}
+
 	name := strings.TrimSpace(registered.Name())
 	if name == "" {
 		return fmt.Errorf("tool name is required")
 	}
+
 	schema := registered.Schema()
 	if schema.Type != "object" {
 		return fmt.Errorf("tool %q schema type must be object", name)
 	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.tools == nil {
 		r.tools = make(map[string]Tool)
 	}
+
 	if _, exists := r.tools[name]; exists {
 		return fmt.Errorf("tool %q is already registered", name)
 	}
+
 	r.tools[name] = registered
 	return nil
 }
@@ -110,6 +116,7 @@ func (r *Registry) Definitions() []Definition {
 	for name, registered := range r.tools {
 		definitions = append(definitions, Definition{Name: name, Schema: registered.Schema()})
 	}
+
 	sort.Slice(definitions, func(i, j int) bool { return definitions[i].Name < definitions[j].Name })
 	return definitions
 }
@@ -128,6 +135,7 @@ func (r *Registry) Execute(ctx context.Context, calls []Call) []Execution {
 			parallel = false
 		}
 	}
+
 	r.mu.RUnlock()
 	for i, call := range calls {
 		results[i].Call = call
@@ -135,6 +143,7 @@ func (r *Registry) Execute(ctx context.Context, calls []Call) []Execution {
 			results[i].Result = ToolResult{Content: "unknown tool: " + call.Name, IsError: true}
 		}
 	}
+
 	if parallel {
 		var wait sync.WaitGroup
 		for i := range calls {
@@ -144,14 +153,17 @@ func (r *Registry) Execute(ctx context.Context, calls []Call) []Execution {
 				results[index].Result, results[index].Duration = executeOne(ctx, registered[index], calls[index])
 			}(i)
 		}
+
 		wait.Wait()
 		return bound(results)
 	}
+
 	for i := range calls {
 		if registered[i] != nil {
 			results[i].Result, results[i].Duration = executeOne(ctx, registered[i], calls[i])
 		}
 	}
+
 	return bound(results)
 }
 
@@ -170,6 +182,7 @@ func executeSafely(ctx context.Context, registered Tool, call Call) (result Tool
 	if err := ctx.Err(); err != nil {
 		return ToolResult{Content: "tool canceled: " + err.Error(), IsError: true}
 	}
+
 	return registered.Execute(ctx, call.Arguments)
 }
 
@@ -179,6 +192,7 @@ func bound(executions []Execution) []Execution {
 		if len(content) <= maxResultBytes {
 			continue
 		}
+
 		omitted := len(content) - maxResultBytes
 		limit := 0
 		suffix := ""
@@ -189,13 +203,17 @@ func bound(executions []Execution) []Execution {
 			if nextOmitted == omitted {
 				break
 			}
+
 			omitted = nextOmitted
 		}
+
 		content = content[:limit]
 		for !utf8.ValidString(content) {
 			content = content[:len(content)-1]
 		}
+
 		executions[i].Result.Content = content + suffix
 	}
+
 	return executions
 }

@@ -46,6 +46,7 @@ func (b *Backend) Start(ctx context.Context, eventBus bus.Bus) error {
 	if err != nil {
 		return fmt.Errorf("find Codex CLI %q: %w", b.binary, err)
 	}
+
 	client, err := codexgo.New(
 		codexgo.WithStdioProcess(path, "app-server", "--stdio"),
 		codexgo.WithProcessDir(b.cwd),
@@ -54,6 +55,7 @@ func (b *Backend) Start(ctx context.Context, eventBus bus.Bus) error {
 	if err != nil {
 		return fmt.Errorf("connect to Codex App Server: %w", err)
 	}
+
 	// Model metadata is useful for the status line but is not required to use
 	// the backend. Older or restricted servers may not support config/read.
 	configCtx, cancelConfig := context.WithTimeout(ctx, 2*time.Second)
@@ -67,6 +69,7 @@ func (b *Backend) Start(ctx context.Context, eventBus bus.Bus) error {
 			b.modelName = strings.TrimSpace(config.Model)
 		}
 	}
+
 	sub := client.Events()
 	b.mu.Lock()
 	b.client, b.sub, b.eventBus = client, sub, eventBus
@@ -92,6 +95,7 @@ func (b *Backend) Start(ctx context.Context, eventBus bus.Bus) error {
 	} else {
 		thread, err = client.StartThread(ctx, codexgo.WithThreadCWD(b.cwd))
 	}
+
 	if err != nil {
 		_ = eventBus.Publish(ctx, event.Event{
 			ID: watermill.NewUUID(), Timestamp: time.Now(), Backend: "codex",
@@ -99,6 +103,7 @@ func (b *Backend) Start(ctx context.Context, eventBus bus.Bus) error {
 		})
 		return fmt.Errorf("start Codex thread: %w", err)
 	}
+
 	b.mu.Lock()
 	b.thread, b.threadID = thread, thread.ID()
 	b.state.BackendSession = thread.ID()
@@ -111,11 +116,13 @@ func (b *Backend) Start(ctx context.Context, eventBus bus.Bus) error {
 			return fmt.Errorf("persist Codex thread identity: %w", err)
 		}
 	}
+
 	if resume {
 		summary := "↻ resumed Codex session"
 		if cwd := session.ShortPath(state.CWD); cwd != "" {
 			summary += " · " + cwd
 		}
+
 		if err := eventBus.Publish(ctx, event.Event{
 			ID: watermill.NewUUID(), Timestamp: time.Now(), Backend: "codex", ThreadID: thread.ID(),
 			Kind: "session.resumed", Summary: summary,
@@ -124,6 +131,7 @@ func (b *Backend) Start(ctx context.Context, eventBus bus.Bus) error {
 			return err
 		}
 	}
+
 	return nil
 }
 
@@ -152,6 +160,7 @@ func (b *Backend) forward(ctx context.Context, sub *codexgo.EventSubscription, e
 			if !ok {
 				return
 			}
+
 			ev := normalizeEvent(sdkEvent)
 			if ev.Kind == "turn.completed" || ev.Kind == "error" {
 				b.mu.Lock()
@@ -164,8 +173,10 @@ func (b *Backend) forward(ctx context.Context, sub *codexgo.EventSubscription, e
 				if b.busy {
 					b.turnID = ev.TurnID
 				}
+
 				b.mu.Unlock()
 			}
+
 			if err := eventBus.Publish(ctx, ev); err != nil && ctx.Err() == nil {
 				_ = eventBus.Publish(ctx, event.Event{
 					ID: watermill.NewUUID(), Timestamp: time.Now(), Backend: "codex",
@@ -182,10 +193,12 @@ func (b *Backend) Submit(ctx context.Context, prompt string) error {
 		b.mu.Unlock()
 		return fmt.Errorf("Codex thread is not started")
 	}
+
 	if b.busy {
 		b.mu.Unlock()
 		return fmt.Errorf("Codex is still working on the current turn")
 	}
+
 	b.busy = true
 	client, eventBus := b.client, b.eventBus
 	threadID := b.threadID
@@ -199,6 +212,7 @@ func (b *Backend) Submit(ctx context.Context, prompt string) error {
 		b.setIdle()
 		return err
 	}
+
 	turn, err := client.TurnStart(ctx, codexgo.TurnStartRequest{ThreadID: threadID, Input: prompt})
 	if err != nil {
 		b.setIdle()
@@ -208,16 +222,19 @@ func (b *Backend) Submit(ctx context.Context, prompt string) error {
 		})
 		return err
 	}
+
 	b.mu.Lock()
 	if b.busy && turn.ID != "" {
 		b.turnID = turn.ID
 	}
+
 	interrupt := b.busy && b.interruptRequested
 	b.interruptRequested = false
 	b.mu.Unlock()
 	if interrupt {
 		return b.Interrupt(ctx)
 	}
+
 	return nil
 }
 
@@ -227,17 +244,20 @@ func (b *Backend) Interrupt(ctx context.Context) error {
 		b.mu.Unlock()
 		return fmt.Errorf("no active turn to interrupt")
 	}
+
 	if b.turnID == "" {
 		b.interruptRequested = true
 		b.mu.Unlock()
 		return nil
 	}
+
 	client := b.client
 	threadID, turnID := b.threadID, b.turnID
 	b.mu.Unlock()
 	if err := client.TurnInterrupt(ctx, codexgo.TurnInterruptRequest{ThreadID: threadID, TurnID: turnID}); err != nil {
 		return err
 	}
+
 	b.rejectPendingApprovals()
 	return nil
 }
@@ -257,6 +277,7 @@ func (b *Backend) rejectPendingApprovalsLocked() {
 				Approval: &event.ApprovalRequest{RequestID: requestID}, Decision: event.ApprovalReject,
 			})
 		}
+
 		delete(b.pendingApprovals, requestID)
 		pending <- event.ApprovalReject
 	}
@@ -266,12 +287,14 @@ func (b *Backend) ResolveApproval(ctx context.Context, requestID string, decisio
 	if decision != event.ApprovalAccept && decision != event.ApprovalReject {
 		return fmt.Errorf("unsupported approval decision %q", decision)
 	}
+
 	b.mu.Lock()
 	pending := b.pendingApprovals[requestID]
 	if pending == nil {
 		b.mu.Unlock()
 		return fmt.Errorf("approval request %q is no longer pending", requestID)
 	}
+
 	resolved := event.Event{
 		ID: watermill.NewUUID(), Timestamp: time.Now(), Backend: "app",
 		Kind: "approval.resolved", Summary: string(decision),
@@ -283,6 +306,7 @@ func (b *Backend) ResolveApproval(ctx context.Context, requestID string, decisio
 			return err
 		}
 	}
+
 	delete(b.pendingApprovals, requestID)
 	pending <- decision
 	b.mu.Unlock()
@@ -296,10 +320,12 @@ func (b *Backend) requestApproval(ctx context.Context, approval event.ApprovalRe
 	if b.pendingApprovals == nil {
 		b.pendingApprovals = make(map[string]chan event.ApprovalDecision)
 	}
+
 	if b.eventBus == nil {
 		b.mu.Unlock()
 		return event.ApprovalReject, fmt.Errorf("event bus is not available for approval request")
 	}
+
 	b.pendingApprovals[approval.RequestID] = decision
 	eventBus := b.eventBus
 	b.mu.Unlock()
@@ -315,6 +341,7 @@ func (b *Backend) requestApproval(ctx context.Context, approval event.ApprovalRe
 		b.mu.Unlock()
 		return event.ApprovalReject, err
 	}
+
 	select {
 	case result := <-decision:
 		return result, nil
@@ -324,6 +351,7 @@ func (b *Backend) requestApproval(ctx context.Context, approval event.ApprovalRe
 			return result, nil
 		default:
 		}
+
 		b.mu.Lock()
 		_, stillPending := b.pendingApprovals[approval.RequestID]
 		delete(b.pendingApprovals, approval.RequestID)
@@ -334,6 +362,7 @@ func (b *Backend) requestApproval(ctx context.Context, approval event.ApprovalRe
 				Approval: &event.ApprovalRequest{RequestID: approval.RequestID}, Decision: event.ApprovalReject,
 			})
 		}
+
 		b.mu.Unlock()
 		return event.ApprovalReject, ctx.Err()
 	}
@@ -370,16 +399,19 @@ func (b *Backend) Close() error {
 		b.sub.Close()
 		b.sub = nil
 	}
+
 	if b.thread != nil {
 		b.thread.Close()
 		b.thread = nil
 	}
+
 	b.threadID, b.turnID = "", ""
 	if b.client != nil {
 		err := b.client.Close()
 		b.client = nil
 		return err
 	}
+
 	return nil
 }
 
@@ -400,6 +432,7 @@ func normalizeWithValue(method string, raw json.RawMessage, value any) event.Eve
 	if method == "item/started" || method == "item/completed" {
 		kind = itemMethodKind(method, itemType)
 	}
+
 	summary := method
 	switch kind {
 	case "message.delta":
@@ -417,6 +450,7 @@ func normalizeWithValue(method string, raw json.RawMessage, value any) event.Eve
 		if exitCode, ok := numberField(item, "exitCode"); ok {
 			data["exit_code"] = int(exitCode)
 		}
+
 		if output := stringField(item, "aggregatedOutput"); output != "" {
 			data["output"] = output
 		}
@@ -453,10 +487,12 @@ func normalizeWithValue(method string, raw json.RawMessage, value any) event.Eve
 			summary = kind + " " + itemType
 		}
 	}
+
 	itemID := stringField(data, "itemId")
 	if itemID == "" {
 		itemID = stringField(item, "id")
 	}
+
 	if kind == "command.output" {
 		delta, _ := data["deltaBase64"].(string)
 		if delta != "" {
@@ -465,6 +501,7 @@ func normalizeWithValue(method string, raw json.RawMessage, value any) event.Eve
 			}
 		}
 	}
+
 	return event.Event{
 		ID: watermill.NewUUID(), Timestamp: time.Now(), Backend: "codex", Kind: kind,
 		ThreadID: stringField(data, "threadId"), TurnID: stringField(data, "turnId"),
@@ -478,23 +515,28 @@ func messageDeltaText(data map[string]any, value any) string {
 		if sdkEvent.Text != "" {
 			return sdkEvent.Text
 		}
+
 		if text := rawDeltaText(sdkEvent.Delta); text != "" {
 			return text
 		}
 	}
+
 	if text, ok := data["text"].(string); ok {
 		return text
 	}
+
 	if delta, ok := data["delta"]; ok {
 		if text, ok := delta.(string); ok {
 			return text
 		}
+
 		if fields, ok := delta.(map[string]any); ok {
 			if text, ok := fields["text"].(string); ok {
 				return text
 			}
 		}
 	}
+
 	return ""
 }
 
@@ -503,12 +545,14 @@ func rawDeltaText(raw json.RawMessage) string {
 	if json.Unmarshal(raw, &text) == nil {
 		return text
 	}
+
 	var fields map[string]any
 	if json.Unmarshal(raw, &fields) == nil {
 		if text, ok := fields["text"].(string); ok {
 			return text
 		}
 	}
+
 	return ""
 }
 
@@ -553,6 +597,7 @@ func itemMethodKind(method, itemType string) string {
 		if method == "item/started" {
 			return "command.started"
 		}
+
 		return "command.completed"
 
 	case "fileChange":
@@ -561,6 +606,7 @@ func itemMethodKind(method, itemType string) string {
 		if method == "item/started" {
 			return "tool.started"
 		}
+
 		return "tool.completed"
 
 	case "reasoning", "plan":
@@ -569,6 +615,7 @@ func itemMethodKind(method, itemType string) string {
 		if method == "item/started" {
 			return "message.started"
 		}
+
 		return "message.completed"
 
 	default:
@@ -581,18 +628,22 @@ func commandSummary(item map[string]any, completed bool) string {
 	if command == "" {
 		command = "Command"
 	}
+
 	if !completed {
 		return command
 	}
+
 	parts := []string{command}
 	if code, ok := numberField(item, "exitCode"); ok {
 		parts = append(parts, fmt.Sprintf("exit %d", int64(code)))
 	} else if status := stringField(item, "status"); status != "" {
 		parts = append(parts, status)
 	}
+
 	if duration, ok := numberField(item, "durationMs"); ok {
 		parts = append(parts, fmt.Sprintf("%dms", int64(duration)))
 	}
+
 	return strings.Join(parts, " · ")
 }
 
@@ -600,16 +651,20 @@ func commandOutput(data map[string]any) string {
 	if output := stringField(data, "output"); output != "" {
 		return output
 	}
+
 	if delta := stringField(data, "delta"); delta != "" {
 		return delta
 	}
+
 	if encoded := stringField(data, "deltaBase64"); encoded != "" {
 		decoded, err := base64.StdEncoding.DecodeString(encoded)
 		if err == nil {
 			return string(decoded)
 		}
+
 		return "[invalid base64 command output]"
 	}
+
 	return ""
 }
 
@@ -617,27 +672,32 @@ func fileSummary(changes []any) string {
 	if len(changes) == 0 {
 		return "File changes updated"
 	}
+
 	parts := make([]string, 0, min(len(changes), 8))
 	for i, raw := range changes {
 		if i == 8 {
 			parts = append(parts, fmt.Sprintf("+%d more", len(changes)-i))
 			break
 		}
+
 		change, ok := raw.(map[string]any)
 		if !ok {
 			continue
 		}
+
 		path := stringField(change, "path")
 		kind := stringField(change, "kind")
 		if path == "" {
 			continue
 		}
+
 		if kind != "" {
 			parts = append(parts, kind+" "+path)
 		} else {
 			parts = append(parts, path)
 		}
 	}
+
 	return strings.Join(parts, ", ")
 }
 
@@ -645,9 +705,11 @@ func changesFrom(data, item map[string]any) []any {
 	if changes, ok := data["changes"].([]any); ok {
 		return changes
 	}
+
 	if changes, ok := item["changes"].([]any); ok {
 		return changes
 	}
+
 	return nil
 }
 
@@ -656,12 +718,15 @@ func toolSummary(item map[string]any, completed bool) string {
 	if namespace := stringField(item, "namespace"); namespace != "" {
 		name = namespace + "." + name
 	}
+
 	if server := stringField(item, "server"); server != "" {
 		name = server + "/" + name
 	}
+
 	if name == "" {
 		name = "Tool"
 	}
+
 	if completed {
 		status := stringField(item, "status")
 		if success, ok := item["success"].(bool); ok {
@@ -671,11 +736,14 @@ func toolSummary(item map[string]any, completed bool) string {
 				status = "failed"
 			}
 		}
+
 		if status != "" {
 			return name + " · " + status
 		}
+
 		return name + " · completed"
 	}
+
 	return name
 }
 
@@ -683,17 +751,21 @@ func statusSummary(method string, data, item map[string]any) string {
 	if text := firstString(data, "text", "delta", "summary"); text != "" {
 		return text
 	}
+
 	if text := firstString(item, "text", "summary", "content"); text != "" {
 		return text
 	}
+
 	if method == "turn/plan/updated" {
 		if plan, ok := data["plan"]; ok {
 			return compactJSON(plan, 500)
 		}
 	}
+
 	if method == "item/reasoning/summaryPartAdded" {
 		return "Reasoning summary updated"
 	}
+
 	return "Status updated"
 }
 
@@ -702,20 +774,24 @@ func usageSummary(data map[string]any) string {
 	if usage == nil {
 		usage, _ = data["usage"].(map[string]any)
 	}
+
 	last, _ := usage["last"].(map[string]any)
 	if last == nil {
 		last = usage
 	}
+
 	input, _ := numberField(last, "inputTokens")
 	output, _ := numberField(last, "outputTokens")
 	total, totalOK := numberField(last, "totalTokens")
 	if !totalOK {
 		total = input + output
 	}
+
 	parts := []string{fmt.Sprintf("%d in · %d out · %d total tokens", int64(input), int64(output), int64(total))}
 	if window, ok := numberField(usage, "modelContextWindow"); ok && window > 0 {
 		parts = append(parts, fmt.Sprintf("context %d", int64(window)))
 	}
+
 	return strings.Join(parts, " · ")
 }
 
@@ -724,14 +800,17 @@ func compactJSON(value any, limit int) string {
 	if err != nil {
 		return "Details unavailable"
 	}
+
 	text := string(encoded)
 	if len(text) > limit {
 		cut := limit
 		for cut > 0 && !utf8.RuneStart(text[cut]) {
 			cut--
 		}
+
 		text = text[:cut] + "…"
 	}
+
 	return text
 }
 
@@ -746,6 +825,7 @@ func firstString(values map[string]any, fields ...string) string {
 			return value
 		}
 	}
+
 	return ""
 }
 
