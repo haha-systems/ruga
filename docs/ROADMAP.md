@@ -23,7 +23,7 @@ records the *why* and the seams, while the PRDs hold the contracts.
 | Approval modes | Design | §12 |
 | Approval takes focus | Design | §13 |
 | Quota stats in the top line | Design | §14 |
-| Parallel tool calls | Design | this document, §1 |
+| Parallel tool calls | Implemented | this document, §1 |
 | Context compaction for OpenAI-compatible | Design (blocked on usage accounting) | §2 |
 | Memory via Ghostdive adapter | Design (blocked on context pressure) | §3 |
 | Quota-aware cognition (QAC) | Design (blocked on CES) | §4 |
@@ -46,62 +46,40 @@ parallel tools are how a bounded phase acts quickly.
 
 ---
 
-## 1. Parallel tool calls
+## 1. Parallel tool calls — implemented
 
-### Intent
+The OpenAI-compatible path now solicits batched tool calls and runs them
+concurrently where that is safe.
 
-Let a single assistant turn issue several independent tool calls that run at
-once, instead of one call per model round trip.
+- **Solicited.** When tools are offered, the request sets `parallel_tool_calls:
+  true` and prepends a short system instruction asking for independent calls in
+  one response (`internal/backend/openai/protocol.go`, `backend.go`). Servers
+  that default to one call per round trip now have a reason not to. Both fields
+  are omitted when no tools are configured, so a plain chat request is unchanged.
+- **Segmented execution.** `tool.Registry.Execute` walks the batch in
+  *contiguous* runs: each run of read-only calls runs concurrently and every
+  other call is serialized in place (`internal/tool/tool.go`). Results still
+  match input order and panics are still recovered per call. This replaces the
+  old all-or-nothing rule where a single mutating call forced the whole batch
+  serial.
 
-### What already exists
+  Contiguous runs, rather than the roadmap's original "read-only phase then
+  mutation phase", keep `[write, read]` from reordering — a read that follows a
+  mutation never overtakes it, so a write-then-verify batch stays correct.
+- **Honest timing.** `turn.completed` now reports `tool_wall_elapsed_ms`
+  alongside the summed `tool_elapsed_ms`, so a parallel batch no longer appears
+  slower than it was.
+- **Higher ceiling.** `maxToolRounds` rises from 16 to 64, since batched calls
+  make each round cover more ground.
 
-The runtime is already batch-oriented and safe:
+Still open (deliberately): the inspector shows N starts then N completions as
+flat items; grouping them is a presentation concern, not part of this slice.
+`Activity.ActiveTools` already counts N concurrent items correctly.
 
-- `tool.Registry.Execute(ctx, []tool.Call)` already runs a whole batch
-  concurrently when *every* resolved tool declares itself read-only via the
-  `tool.ReadOnly` capability (`internal/tool/tool.go`). Results always preserve
-  the original call order and panics are recovered per call.
-- `echo`, `read`, `search`, and `list` are `ReadOnly`; `patch`, `write`, and
-  `exec` are not.
-- The OpenAI-compatible stream parser already assembles multiple `tool_calls`
-  by index, sorts them, and returns the full set on `assistantResponse.ToolCalls`
-  (`internal/backend/openai/backend.go`).
-
-So a multi-call assistant message would already flow end to end. Nothing
-currently solicits one.
-
-### Gaps
-
-1. **Nothing asks for parallel calls.** The OpenAI request sends no `system`
-   message and no `parallel_tool_calls` field; many compatible servers default
-   to sequential tool use unless told otherwise.
-2. **All-or-nothing batching.** One non-read-only call forces the entire batch
-   sequential. A batch of three reads plus one write runs fully serially.
-3. **Timing double-counts.** `turn.completed.tool_elapsed_ms` is the *sum* of
-   per-call durations, which overstates wall-clock for a parallel batch.
-4. **No UI grouping.** The inspector shows N starts then N completions as flat
-   items. The `ActiveTools` counter already handles N concurrent items.
-
-### Seams
-
-- `protocol.go`: add `parallel_tool_calls` and a short system instruction; the
-  request type is already local to the provider package.
-- `tool.go`: partition a batch into a concurrent read-only phase followed by a
-  serialized mutation phase, still preserving input order in results.
-- `backend.go`: record batch wall-clock alongside summed per-call durations.
-
-### Constraints
-
-- Parallelism is only as safe as the underlying tools: `search`/`read` shell out
-  to `rg` and the filesystem.
-- The OpenAI backend has no approvals or interrupt wiring, so a parallel batch
-  is cancelled as a unit via `ctx`.
-- The Codex backend delegates tool execution to App Server; parallelism there is
-  Codex's decision, not Ruga's.
-
-### Trigger
-
-Low risk and independent. Can be done now; it needs no other feature.
+Constraints that remain true: parallelism is only as safe as the underlying
+tools (`search`/`read` shell out to `rg` and the filesystem), the OpenAI backend
+cancels a parallel batch as a unit via `ctx`, and Codex parallelises by its own
+decision through App Server.
 
 ---
 
@@ -674,13 +652,13 @@ usage accounting ──▶ context compaction (§2)
 CES (§5) ──▶ QAC (§4)
 CES (§5) ──▶ persisted trajectories ──▶ memory (§3)
 
-parallel tools (§1) — independent, do anytime
+parallel tools (§1) — implemented
 ```
 
 Interface track, largely independent of the cognition stack:
 
 ```text
-markdown rendering (§7) ──▶ themes (§8)   share the theme abstraction
+themes (§8) — builds on the markdown (§7) theme seam
 multiline composer (§6)   — independent
 focused-panel state (§11) — after movable event stream (§9)
 approval takes focus (§13) — builds on approval flow
@@ -694,14 +672,15 @@ approval modes (§12) ──▶ approval focus behavior (§13)
 usage accounting (§2) ──▶ quota stats in top line (§14)
 ```
 
-Suggested order if pursued: **§1** (cheap, independent) → **usage accounting** →
-**§2** → **§5** → **§4** → **§3** prefix layer. The tool-level memory slice of
-§3 can land at any time. The interface track (§6–§11, §13–§14) can run in
-parallel with or between the cognition work; §7 is done and §8 (which builds on
-the `MarkdownStyle` seam it added) is next there, followed by **§6**, **§9**,
-**§11**, then **§14** once usage data is available. Approval work (§12–§13) and
-the configuration file (§10) are cross-cutting and need their contracts settled
-before implementation. None of
+Done so far: **§1** (parallel tool calls) and **§7** (markdown rendering).
+
+Suggested order for what remains: **usage accounting** → **§2** → **§5** →
+**§4** → **§3** prefix layer. The tool-level memory slice of §3 can land at any
+time. The interface track (§6–§11, §13–§14) can run in parallel with or between
+the cognition work; §8 (which builds on the `MarkdownStyle` seam §7 added) is
+next there, followed by **§6**, **§9**, **§11**, then **§14** once usage data is
+available. Approval work (§12–§13) and the configuration file (§10) are
+cross-cutting and need their contracts settled before implementation. None of
 these block the cognition stack.
 
 ## Non-goals for this roadmap
