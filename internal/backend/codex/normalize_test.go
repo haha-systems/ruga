@@ -18,6 +18,7 @@ func TestNormalize(t *testing.T) {
 	}{
 		{name: "thread start", method: "thread/started", payload: `{"threadId":"th-1"}`, wantKind: "thread.started", wantSummary: "thread/started"},
 		{name: "message delta", method: "item/agentMessage/delta", payload: `{"threadId":"th-1","turnId":"tu-2","itemId":"it-3","text":"hello"}`, wantKind: "message.delta", wantSummary: "hello"},
+		{name: "message completed", method: "item/completed", payload: `{"item":{"id":"it-message","type":"agentMessage","text":"full answer"}}`, wantKind: "message.completed", wantSummary: "full answer", wantItemID: "it-message"},
 		{name: "error", method: "error", payload: `{"message":"failed"}`, wantKind: "error", wantSummary: "failed"},
 		{name: "unknown", method: "future/event", payload: `{"threadId":"th-1","extra":true}`, wantKind: "backend.unknown", wantSummary: "future/event"},
 		{name: "command start", method: "item/started", payload: `{"threadId":"th-1","turnId":"tu-1","item":{"id":"it-cmd","type":"commandExecution","command":"go test ./..."}}`, wantKind: "command.started", wantSummary: "go test ./...", wantItemID: "it-cmd"},
@@ -67,6 +68,17 @@ func TestNormalizeReadsDeltaField(t *testing.T) {
 	ev := normalize("item/agentMessage/delta", json.RawMessage(`{"delta":"PONG"}`))
 	if ev.Summary != "PONG" {
 		t.Fatalf("Summary = %q, want PONG", ev.Summary)
+	}
+}
+
+func TestNormalizeCommandAndToolCompletionExposeSemanticFields(t *testing.T) {
+	command := normalize("item/completed", json.RawMessage(`{"item":{"type":"commandExecution","command":"go test ./...","exitCode":2,"aggregatedOutput":"failed details"}}`))
+	if command.Data["exit_code"] != 2 || command.Data["output"] != "failed details" {
+		t.Fatalf("command completion data = %+v", command.Data)
+	}
+	tool := normalize("item/completed", json.RawMessage(`{"item":{"type":"mcpToolCall","tool":"search","success":false}}`))
+	if tool.Data["error"] != true {
+		t.Fatalf("tool completion data = %+v", tool.Data)
 	}
 }
 

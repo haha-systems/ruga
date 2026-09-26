@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 	"unicode"
@@ -12,11 +13,16 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/harmonica"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/haha-systems/ruga/internal/event"
+	"github.com/haha-systems/ruga/internal/presentation"
 )
 
 type batchMsg []event.Event
+type streamClosedMsg struct{}
+type panelFrameMsg struct{ generation int }
+type activityFrameMsg struct{ generation int }
 
 type submitResultMsg struct{ err error }
 type approvalResultMsg struct {
@@ -44,51 +50,55 @@ type focusTarget uint8
 const (
 	focusComposer focusTarget = iota
 	focusTimeline
+	focusTelemetry
 	focusApproval
 )
 
 type model struct {
-	viewport     viewport.Model
-	input        textinput.Model
-	stream       <-chan []event.Event
-	submit       func(context.Context, string) error
-	actions      Actions
-	ctx          context.Context
-	events       []event.Event
-	approvals    []event.ApprovalRequest
-	submitting   map[string]bool
-	status       string
-	notice       string
-	project      string
-	branch       string
-	backend      string
-	modelName    string
-	usage        string
-	search       textinput.Model
-	searchActive bool
-	focus        focusTarget
-	turnActive   bool
-	interrupting bool
-	readOnly     bool
-	width        int
-	height       int
-	ready        bool
+	viewport           viewport.Model
+	telemetryViewport  viewport.Model
+	input              textinput.Model
+	stream             <-chan []event.Event
+	submit             func(context.Context, string) error
+	actions            Actions
+	ctx                context.Context
+	presentation       presentation.Model
+	approvals          []event.ApprovalRequest
+	submitting         map[string]bool
+	status             string
+	notice             string
+	project            string
+	branch             string
+	backend            string
+	modelName          string
+	usage              string
+	search             textinput.Model
+	searchActive       bool
+	focus              focusTarget
+	turnActive         bool
+	interrupting       bool
+	readOnly           bool
+	width              int
+	height             int
+	ready              bool
+	showTelemetry      bool
+	selectedTelemetry  int
+	expandedTelemetry  map[int]bool
+	telemetryRows      map[int][2]int
+	telemetryFollowing bool
+	panelPosition      float64
+	panelVelocity      float64
+	panelWidth         int
+	panelGeneration    int
+	panelAnimating     bool
+	unseenTelemetry    int
+	activityFrame      int
+	activityGeneration int
+	activityTicking    bool
+	theme              Theme
 }
 
-const maxCommandOutputBytes = 4096
-
-var (
-	titleStyle         = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
-	mutedStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	approvalStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
-	resolvedStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
-	rejectedStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
-	approvalPanelStyle = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("3")).Padding(0, 1)
-	userStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
-	assistantStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
-	errorStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
-	commandStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
-)
+var panelSpring = harmonica.NewSpring(harmonica.FPS(30), 18, 1)
 
 func Run(ctx context.Context, events <-chan event.Event, submit func(context.Context, string) error, actions Actions, configs ...Config) error {
 	ctx, cancel := context.WithCancel(ctx)
@@ -99,7 +109,7 @@ func Run(ctx context.Context, events <-chan event.Event, submit func(context.Con
 	input.Focus()
 	search := textinput.New()
 	search.Prompt = "/ "
-	search.Placeholder = "filter timeline"
+	search.Placeholder = "filter events"
 	config := Config{}
 	if len(configs) > 0 {
 		config = configs[0]
@@ -117,48 +127,100 @@ func Run(ctx context.Context, events <-chan event.Event, submit func(context.Con
 		ctx: ctx, status: "idle", focus: focus, submitting: make(map[string]bool),
 		project: config.Project, branch: config.Branch, backend: config.Backend,
 		modelName: config.Model, search: search, readOnly: config.ReadOnly,
+		selectedTelemetry: -1, telemetryFollowing: true,
+		theme: defaultTheme,
 	}, tea.WithContext(ctx), tea.WithAltScreen())
 	_, err := program.Run()
 	return err
 }
 
-func (m model) Init() tea.Cmd { return tea.Batch(waitBatch(m.stream), textinput.Blink) }
+func (m model) Init() tea.Cmd { return tea.Batch(waitBatch(m.stream, m.readOnly), textinput.Blink) }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		follow := !m.ready || m.viewport.AtBottom()
+		followTelemetry := m.telemetryFollowing && (!m.ready || m.telemetryViewport.AtBottom())
+		if msg.Width < 70 {
+			m.panelPosition, m.panelVelocity, m.panelWidth = 0, 0, 0
+			m.panelAnimating = false
+		} else if m.showTelemetry && !m.panelAnimating {
+			m.panelWidth = desiredPanelWidth(msg.Width)
+			m.panelPosition = float64(m.panelWidth)
+		}
 		m.resize(msg.Width, msg.Height)
-		m.refresh(follow)
+		m.refreshViews(follow, followTelemetry)
+	case panelFrameMsg:
+		if msg.generation != m.panelGeneration || !m.panelAnimating {
+			return m, nil
+		}
+		follow := !m.ready || m.viewport.AtBottom()
+		followTelemetry := m.telemetryFollowing && (!m.ready || m.telemetryViewport.AtBottom())
+		target := 0.0
+		if m.showTelemetry {
+			target = float64(desiredPanelWidth(m.width))
+		}
+		m.panelPosition, m.panelVelocity = panelSpring.Update(m.panelPosition, m.panelVelocity, target)
+		m.panelPosition = math.Max(0, math.Min(float64(desiredPanelWidth(m.width)), m.panelPosition))
+		if math.Abs(m.panelPosition-target) < 0.5 && math.Abs(m.panelVelocity) < 1 {
+			m.panelPosition, m.panelVelocity = target, 0
+			m.panelAnimating = false
+		}
+		m.panelWidth = int(math.Round(m.panelPosition))
+		m.resize(m.width, m.height)
+		m.refreshViews(follow, followTelemetry)
+		if m.panelAnimating {
+			return m, nextPanelFrame(m.panelGeneration)
+		}
+		if m.showTelemetry && m.telemetryFollowing && m.telemetryViewport.AtBottom() {
+			m.unseenTelemetry = 0
+		}
+		return m, nil
+	case activityFrameMsg:
+		if msg.generation != m.activityGeneration || !m.activityTicking || m.presentation.Activity.ActiveTools == 0 {
+			return m, nil
+		}
+		m.activityFrame = (m.activityFrame + 1) % 4
+		m.refreshViews(false, false)
+		return m, nextActivityFrame(m.activityGeneration)
 	case batchMsg:
 		follow := !m.ready || m.viewport.AtBottom()
+		followTelemetry := m.telemetryFollowing && (!m.ready || m.telemetryViewport.AtBottom())
+		previousActivity := m.presentation.Activity.TurnStatus
+		previousTelemetry := m.presentation.Activity.TelemetryEvents
 		for _, ev := range msg {
 			m.add(ev)
-			switch ev.Kind {
-			case "turn.started":
-				m.status = "working"
-				m.turnActive = true
-			case "turn.completed":
-				m.status = "idle"
-				m.turnActive = false
+		}
+		if added := m.presentation.Activity.TelemetryEvents - previousTelemetry; added > 0 && (!m.panelVisible() || !m.telemetryFollowing) {
+			m.unseenTelemetry += added
+		}
+		if activity := m.presentation.Activity.TurnStatus; activity != "" && activity != previousActivity {
+			m.turnActive = activity == "working"
+			if !m.turnActive {
 				m.interrupting = false
-				if status, _ := ev.Data["status"].(string); status == "failed" {
-					m.status = "error"
-				} else if status == "interrupted" || status == "cancelled" || status == "canceled" {
-					m.status = "interrupted"
-					m.finishInterruptedItems(ev.TurnID)
-				}
-			case "error":
-				m.status = "error"
-				m.turnActive = false
-				m.interrupting = false
+			}
+			if !m.interrupting {
+				m.status = activity
 			}
 		}
 		if m.ready {
 			m.resize(m.width, m.height)
 		}
-		m.refresh(follow)
-		return m, waitBatch(m.stream)
+		m.refreshViews(follow, followTelemetry)
+		wait := waitBatch(m.stream, m.readOnly)
+		if m.presentation.Activity.ActiveTools > 0 && !m.activityTicking {
+			m.activityTicking = true
+			m.activityGeneration++
+			return m, tea.Batch(wait, nextActivityFrame(m.activityGeneration))
+		}
+		if m.presentation.Activity.ActiveTools == 0 && m.activityTicking {
+			m.activityTicking = false
+			m.activityGeneration++
+		}
+		return m, wait
+	case streamClosedMsg:
+		m.notice = "Replay complete"
+		return m, nil
 	case submitResultMsg:
 		if msg.err != nil {
 			m.status = "error"
@@ -192,9 +254,9 @@ func (m model) View() string {
 		return "Starting Codex App Server…"
 	}
 	header := m.headerLine()
-	footer := mutedStyle.Render(fitLine(m.footerKeys(), max(1, m.width)))
+	footer := m.style(presentation.RoleMuted).Render(fitLine(m.footerKeys(), max(1, m.width)))
 	if m.notice != "" {
-		footer = mutedStyle.Render(fitLine(m.notice+"  ·  "+m.footerKeys(), max(1, m.width)))
+		footer = m.style(presentation.RoleMuted).Render(fitLine(m.notice+"  ·  "+m.footerKeys(), max(1, m.width)))
 	}
 	parts := []string{header}
 	if m.searchActive || m.search.Value() != "" {
@@ -203,44 +265,103 @@ func (m model) View() string {
 	if panel := m.approvalPanel(); panel != "" {
 		parts = append(parts, panel)
 	}
-	parts = append(parts, m.viewport.View(), m.input.View(), footer)
-	return strings.Join(parts, "\n")
+	parts = append(parts, m.viewHeading(), m.viewBody(), m.input.View(), footer)
+	return m.activeTheme().Canvas.Width(m.width).Height(m.height).Render(strings.Join(parts, "\n"))
+}
+
+func (m model) viewHeading() string {
+	if !m.panelVisible() {
+		return m.style(presentation.RoleMuted).Render(fitLine("CONVERSATION", m.width))
+	}
+	if m.width < 70 {
+		return m.style(presentation.RoleMuted).Render(fitLine(m.inspectorHeading(), m.width))
+	}
+	left, right := m.viewWidths()
+	return lipgloss.JoinHorizontal(lipgloss.Top,
+		m.style(presentation.RoleMuted).Width(left).Render("CONVERSATION"),
+		m.activeTheme().Divider.Render("│"),
+		m.style(presentation.RoleMuted).Width(right).Render(fitLine(m.inspectorHeading(), right)),
+	)
+}
+
+func (m model) inspectorHeading() string {
+	heading := "EVENT STREAM"
+	if m.unseenTelemetry > 0 {
+		heading += fmt.Sprintf(" +%d", m.unseenTelemetry)
+	}
+	return heading
+}
+
+func (m model) viewBody() string {
+	if !m.panelVisible() {
+		return m.viewport.View()
+	}
+	if m.width < 70 {
+		return m.telemetryViewport.View()
+	}
+	divider := m.activeTheme().Divider.Render(strings.TrimSuffix(strings.Repeat("│\n", m.viewport.Height), "\n"))
+	return lipgloss.JoinHorizontal(lipgloss.Top, m.viewport.View(), divider, m.telemetryViewport.View())
+}
+
+func (m model) viewWidths() (int, int) {
+	return max(1, m.width-m.panelWidth-1), max(1, m.panelWidth)
+}
+
+func (m model) panelVisible() bool {
+	return m.panelWidth > 0 || m.width < 70 && m.showTelemetry
+}
+
+func desiredPanelWidth(width int) int {
+	return min(60, max(22, (width-1)*2/5))
 }
 
 func (m *model) resize(width, height int) {
 	m.width, m.height = max(1, width), max(1, height)
+	if m.width >= 70 && m.showTelemetry && m.panelWidth == 0 && !m.panelAnimating {
+		m.panelWidth = desiredPanelWidth(m.width)
+		m.panelPosition = float64(m.panelWidth)
+	}
 	m.input.Width = max(1, width-lipgloss.Width(m.input.Prompt)-2)
 	m.search.Width = max(1, width-lipgloss.Width(m.search.Prompt)-2)
 	panelHeight := 0
 	if panel := m.approvalPanel(); panel != "" {
 		panelHeight = lipgloss.Height(panel) + 1
 	}
-	chromeHeight := 3 // header, composer, footer
+	chromeHeight := 4 // header, view heading, composer, footer
 	if m.searchActive || m.search.Value() != "" {
 		chromeHeight++
 	}
 	viewportHeight := max(1, height-chromeHeight-panelHeight)
+	conversationWidth, telemetryWidth := m.width, m.width
+	if m.panelWidth > 0 && m.width >= 70 {
+		conversationWidth, telemetryWidth = m.viewWidths()
+	}
 	if !m.ready {
-		m.viewport = viewport.New(max(1, width), viewportHeight)
+		m.viewport = viewport.New(conversationWidth, viewportHeight)
+		m.telemetryViewport = viewport.New(telemetryWidth, viewportHeight)
 		m.ready = true
 		return
 	}
-	m.viewport.Width = max(1, width)
+	m.viewport.Width = conversationWidth
 	m.viewport.Height = viewportHeight
+	m.telemetryViewport.Width = telemetryWidth
+	m.telemetryViewport.Height = viewportHeight
 }
 
 func (m model) footerKeys() string {
-	copyKeys := " · / filter"
+	inspectorKey := " · ctrl+e events"
 	switch m.focus {
 	case focusApproval:
-		return "y/enter accept · n/esc reject · tab focus · ctrl+x interrupt · ctrl+c quit" + copyKeys
+		return "y/enter accept · n/esc reject · tab focus · ctrl+x interrupt · ctrl+c quit" + inspectorKey
 	case focusTimeline:
-		return "↑/↓ scroll · pgup/pgdn page · g/G top/bottom · c copy · tab composer · ctrl+x interrupt · ctrl+c quit" + copyKeys
+		return "↑/↓ scroll · pgup/pgdn page · g/G top/bottom · tab focus · ctrl+x interrupt · ctrl+c quit" + inspectorKey
+	case focusTelemetry:
+		return "↑/↓ select · enter expand · pgup/pgdn scroll · G follow · / filter · c copy · tab focus · ctrl+c quit" + inspectorKey
 	default:
 		if m.readOnly {
-			return "replay · tab timeline · ctrl+c quit" + copyKeys
+			return "replay · tab focus · ctrl+c quit" + inspectorKey
 		}
-		return "enter send · tab timeline · ctrl+x interrupt · ctrl+c quit" + copyKeys
+		return "enter send · tab focus · ctrl+x interrupt · ctrl+c quit" + inspectorKey
 	}
 }
 
@@ -261,22 +382,36 @@ func (m model) headerLine() string {
 	if m.usage != "" {
 		parts = append(parts, m.usage)
 	}
+	if !m.panelVisible() && len(m.presentation.Telemetry) > 0 {
+		indicator := fmt.Sprintf("LOG %d", len(m.presentation.Telemetry))
+		if m.unseenTelemetry > 0 {
+			indicator += fmt.Sprintf(" +%d", m.unseenTelemetry)
+		}
+		if m.presentation.Activity.ActiveTools > 0 && m.presentation.Activity.Latest != "" {
+			indicator += " · " + m.presentation.Activity.Latest
+		}
+		parts = append(parts, indicator)
+	}
 	if len(parts) == 0 {
 		parts = append(parts, "ruga")
 	}
-	statusStyle := mutedStyle
+	statusStyle := m.style(presentation.RoleMuted)
 	if m.status == "working" || m.status == "interrupting" {
-		statusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
+		statusStyle = m.style(presentation.RoleActive)
 	} else if m.status == "error" {
-		statusStyle = errorStyle
+		statusStyle = m.style(presentation.RoleFailure)
 	}
-	state := "● " + m.status
+	glyph := "●"
+	if m.presentation.Activity.ActiveTools > 0 {
+		glyph = activityGlyph(m.activityFrame)
+	}
+	state := glyph + " " + m.status
 	if m.width <= lipgloss.Width(state)+3 {
 		return statusStyle.Render(fitLine(state, m.width))
 	}
 	metadataWidth := max(1, m.width-lipgloss.Width(state)-3)
-	metadata := titleStyle.Render(fitLine(strings.Join(parts, "  ·  "), metadataWidth))
-	return metadata + mutedStyle.Render("  ·  ") + statusStyle.Render(state)
+	metadata := m.activeTheme().Title.Render(fitLine(strings.Join(parts, "  ·  "), metadataWidth))
+	return metadata + m.style(presentation.RoleMuted).Render("  ·  ") + statusStyle.Render(state)
 }
 
 func (m model) approvalPanel() string {
@@ -300,7 +435,7 @@ func (m model) approvalPanel() string {
 	lines = append(lines, wrapLine("details: "+detail, lineWidth)...)
 	lines = append(lines, wrapLine("reason: "+reason, lineWidth)...)
 	lines = append(lines, fitLine(keys, lineWidth))
-	return approvalPanelStyle.Width(width).Render(strings.Join(lines, "\n"))
+	return m.activeTheme().ApprovalPanel.Width(width).Render(strings.Join(lines, "\n"))
 }
 
 func wrapLine(value string, width int) []string {
@@ -390,6 +525,9 @@ func (m *model) setFocus(target focusTarget) {
 		target = focusComposer
 	}
 	m.focus = target
+	if target == focusTelemetry {
+		m.ensureTelemetrySelection()
+	}
 	if target == focusComposer {
 		m.input.Focus()
 	} else {
@@ -402,6 +540,14 @@ func (m *model) nextFocus() {
 	case focusComposer:
 		m.setFocus(focusTimeline)
 	case focusTimeline:
+		if m.showTelemetry {
+			m.setFocus(focusTelemetry)
+		} else if len(m.approvals) > 0 {
+			m.setFocus(focusApproval)
+		} else {
+			m.setFocus(focusComposer)
+		}
+	case focusTelemetry:
 		if len(m.approvals) > 0 {
 			m.setFocus(focusApproval)
 		} else {
@@ -409,6 +555,96 @@ func (m *model) nextFocus() {
 		}
 	default:
 		m.setFocus(focusComposer)
+	}
+}
+
+func (m model) visibleTelemetry() []int {
+	indices := make([]int, 0, len(m.presentation.Telemetry))
+	for index, item := range m.presentation.Telemetry {
+		if item.Matches(m.search.Value()) {
+			indices = append(indices, index)
+		}
+	}
+	return indices
+}
+
+func (m *model) ensureTelemetrySelection() {
+	visible := m.visibleTelemetry()
+	if len(visible) == 0 {
+		m.selectedTelemetry = -1
+		return
+	}
+	for _, index := range visible {
+		if index == m.selectedTelemetry {
+			return
+		}
+	}
+	m.selectedTelemetry = visible[len(visible)-1]
+}
+
+func (m *model) moveTelemetrySelection(delta int) {
+	visible := m.visibleTelemetry()
+	if len(visible) == 0 {
+		return
+	}
+	m.ensureTelemetrySelection()
+	position := 0
+	for index, item := range visible {
+		if item == m.selectedTelemetry {
+			position = index
+			break
+		}
+	}
+	position = max(0, min(len(visible)-1, position+delta))
+	m.selectedTelemetry = visible[position]
+	m.telemetryFollowing = false
+	m.refreshViews(false, false)
+	m.ensureSelectedVisible()
+}
+
+func (m *model) selectTelemetryBoundary(last bool) {
+	visible := m.visibleTelemetry()
+	if len(visible) == 0 {
+		return
+	}
+	index := 0
+	if last {
+		index = len(visible) - 1
+	}
+	m.selectedTelemetry = visible[index]
+	m.telemetryFollowing = last
+	if last {
+		m.unseenTelemetry = 0
+	}
+	m.refreshViews(false, last)
+	if last {
+		m.telemetryViewport.GotoBottom()
+	} else {
+		m.telemetryViewport.GotoTop()
+	}
+}
+
+func (m *model) toggleTelemetryExpansion() {
+	m.ensureTelemetrySelection()
+	if m.selectedTelemetry < 0 {
+		return
+	}
+	if m.expandedTelemetry == nil {
+		m.expandedTelemetry = make(map[int]bool)
+	}
+	m.expandedTelemetry[m.selectedTelemetry] = !m.expandedTelemetry[m.selectedTelemetry]
+	m.telemetryFollowing = false
+	m.refreshViews(false, false)
+	m.ensureSelectedVisible()
+}
+
+func (m *model) ensureSelectedVisible() {
+	rows, ok := m.telemetryRows[m.selectedTelemetry]
+	if !ok || m.telemetryViewport.Height <= 0 {
+		return
+	}
+	if rows[0] < m.telemetryViewport.YOffset || rows[0] >= m.telemetryViewport.YOffset+m.telemetryViewport.Height {
+		m.telemetryViewport.SetYOffset(rows[0])
 	}
 }
 
@@ -423,6 +659,28 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.interrupting = true
 		m.status = "interrupting"
 		return m, interruptTurn(m.ctx, m.actions.Interrupt)
+	case tea.KeyCtrlE:
+		m.showTelemetry = !m.showTelemetry
+		if !m.showTelemetry && m.focus == focusTelemetry {
+			m.setFocus(focusTimeline)
+		} else if m.showTelemetry && m.width < 70 && m.focus == focusTimeline {
+			m.setFocus(focusTelemetry)
+		}
+		if m.showTelemetry {
+			m.ensureTelemetrySelection()
+		}
+		if m.width >= 70 {
+			m.panelGeneration++
+			m.panelAnimating = true
+			m.resizeIfReady()
+			return m, nextPanelFrame(m.panelGeneration)
+		}
+		m.panelWidth, m.panelPosition, m.panelVelocity = 0, 0, 0
+		m.resizeIfReady()
+		if m.showTelemetry && m.telemetryFollowing && m.telemetryViewport.AtBottom() {
+			m.unseenTelemetry = 0
+		}
+		return m, nil
 	case tea.KeyTab:
 		if m.searchActive {
 			m.searchActive = false
@@ -431,6 +689,10 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.nextFocus()
+		m.refreshViews(false, false)
+		if m.focus == focusTelemetry {
+			m.ensureSelectedVisible()
+		}
 		return m, nil
 	case tea.KeyEsc:
 		if m.searchActive {
@@ -440,7 +702,7 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.resizeIfReady()
 			return m, nil
 		}
-		if m.search.Value() != "" && m.focus == focusTimeline {
+		if m.search.Value() != "" && m.focus == focusTelemetry {
 			m.search.SetValue("")
 			m.resizeIfReady()
 			return m, nil
@@ -448,7 +710,7 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch m.focus {
 		case focusApproval:
 			return m.decideActiveApproval(event.ApprovalReject)
-		case focusTimeline:
+		case focusTimeline, focusTelemetry:
 			m.setFocus(focusComposer)
 		case focusComposer:
 			if m.input.Value() != "" {
@@ -480,43 +742,82 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	if m.focus == focusTimeline {
+	if m.focus == focusTimeline || m.focus == focusTelemetry {
+		targetViewport := &m.viewport
+		if m.focus == focusTelemetry {
+			targetViewport = &m.telemetryViewport
+		}
 		if msg.Type == tea.KeyRunes {
 			switch msg.String() {
 			case "/":
+				if m.focus != focusTelemetry {
+					break
+				}
 				m.searchActive = true
 				m.search.Focus()
 				m.resizeIfReady()
 				return m, textinput.Blink
 			case "c":
-				if err := clipboard.WriteAll(m.copyTimeline()); err != nil {
+				copyText := m.copyConversation()
+				if m.focus == focusTelemetry {
+					copyText = m.copyTelemetry()
+				}
+				if err := clipboard.WriteAll(copyText); err != nil {
 					m.notice = "copy unavailable"
 				} else {
-					m.notice = "timeline copied"
+					m.notice = "view copied"
 				}
 				return m, nil
 			}
 		}
+		if m.focus == focusTelemetry {
+			switch msg.Type {
+			case tea.KeyUp:
+				m.moveTelemetrySelection(-1)
+				return m, nil
+			case tea.KeyDown:
+				m.moveTelemetrySelection(1)
+				return m, nil
+			case tea.KeyEnter:
+				m.toggleTelemetryExpansion()
+				return m, nil
+			case tea.KeyPgUp, tea.KeyPgDown:
+				m.telemetryFollowing = false
+			case tea.KeyHome:
+				m.selectTelemetryBoundary(false)
+				return m, nil
+			case tea.KeyEnd:
+				m.selectTelemetryBoundary(true)
+				return m, nil
+			case tea.KeyRunes:
+				if msg.String() == "g" || msg.String() == "G" {
+					m.selectTelemetryBoundary(msg.String() == "G")
+					return m, nil
+				}
+			}
+		}
 		switch msg.Type {
 		case tea.KeyUp:
-			m.viewport.LineUp(1)
+			targetViewport.LineUp(1)
 		case tea.KeyDown:
-			m.viewport.LineDown(1)
+			targetViewport.LineDown(1)
 		case tea.KeyPgUp:
-			m.viewport.PageUp()
+			targetViewport.PageUp()
 		case tea.KeyPgDown:
-			m.viewport.PageDown()
+			targetViewport.PageDown()
 		case tea.KeyHome:
-			m.viewport.GotoTop()
+			targetViewport.GotoTop()
 		case tea.KeyEnd:
-			m.viewport.GotoBottom()
+			targetViewport.GotoBottom()
 		case tea.KeyEnter:
-			m.setFocus(focusComposer)
+			if m.focus == focusTimeline {
+				m.setFocus(focusComposer)
+			}
 		case tea.KeyRunes:
 			if msg.String() == "g" {
-				m.viewport.GotoTop()
+				targetViewport.GotoTop()
 			} else if msg.String() == "G" {
-				m.viewport.GotoBottom()
+				targetViewport.GotoBottom()
 			}
 		}
 		return m, nil
@@ -566,147 +867,37 @@ func (m *model) resizeIfReady() {
 }
 
 func (m *model) add(ev event.Event) {
+	m.presentation.Apply(ev)
 	if ev.Backend != "" && ev.Backend != "app" {
 		if m.backend == "" {
 			m.backend = strings.ToUpper(ev.Backend[:1]) + ev.Backend[1:]
 		}
 	}
-	if name := eventModel(ev); name != "" {
+	if name := m.presentation.Activity.Model; name != "" {
 		m.modelName = name
 	}
+	if usage := m.presentation.Activity.Usage; usage != "" {
+		m.usage = compactUsage(usage)
+	}
 	switch ev.Kind {
-	case "command.started":
-		ev.Data = map[string]any{"output": map[string]string{}, "outputBytes": 0}
-		ev.Raw = nil
-		m.events = append(m.events, ev)
-	case "command.output":
-		if index := m.findEvent(ev.ItemID, "command.started", "command.completed"); index >= 0 {
-			m.addCommandOutput(&m.events[index], ev)
-		}
-	case "command.completed":
-		if index := m.findEvent(ev.ItemID, "command.started", "command.completed"); index >= 0 {
-			entry := &m.events[index]
-			if outputBytes(*entry) == 0 {
-				if item := nestedItem(ev); item != nil {
-					if output, ok := item["aggregatedOutput"].(string); ok {
-						m.appendOutput(entry, "stdout", output)
-					}
-				}
-			}
-			entry.Kind, entry.Summary = ev.Kind, ev.Summary
-			entry.Raw = nil
-		} else {
-			ev.Data = map[string]any{"output": map[string]string{}, "outputBytes": 0}
-			ev.Raw = nil
-			m.events = append(m.events, ev)
-		}
-	case "tool.started":
-		ev.Raw = nil
-		ev.Data = nil
-		m.events = append(m.events, ev)
-	case "tool.progress":
-		if index := m.findEvent(ev.ItemID, "tool.started", "tool.completed"); index >= 0 && ev.Summary != "" {
-			m.events[index].Data = map[string]any{"progress": compact(ev.Summary, 240)}
-		}
-	case "tool.completed":
-		if index := m.findEvent(ev.ItemID, "tool.started", "tool.completed"); index >= 0 {
-			entry := &m.events[index]
-			entry.Kind, entry.Summary = ev.Kind, ev.Summary
-			entry.Raw, entry.Data = nil, nil
-		} else {
-			ev.Raw, ev.Data = nil, nil
-			m.events = append(m.events, ev)
-		}
-	case "message.delta":
-		if index := m.findEvent(ev.ItemID, "message.delta"); index >= 0 {
-			m.events[index].Summary += ev.Summary
-			m.events[index].Timestamp = ev.Timestamp
-		} else {
-			ev.Raw, ev.Data = nil, nil
-			m.events = append(m.events, ev)
-		}
-	case "status.update":
-		if ev.ItemID != "" {
-			if index := m.findEvent(ev.ItemID, "status.update"); index >= 0 {
-				if m.events[index].Summary != "" && ev.Summary != "" {
-					m.events[index].Summary += " · "
-				}
-				m.events[index].Summary += ev.Summary
-				m.events[index].Timestamp = ev.Timestamp
-				return
-			}
-		}
-		ev.Data = nil
-		ev.Raw = nil
-		m.events = append(m.events, ev)
-	case "file.changed":
-		ev.Raw, ev.Data = nil, nil
-		if index := m.findEvent(ev.ItemID, "file.changed"); index >= 0 {
-			m.events[index].Summary = ev.Summary
-		} else {
-			m.events = append(m.events, ev)
-		}
-	case "file.output", "usage.updated":
-		ev.Raw = nil
-		if ev.Kind == "file.output" {
-			ev.Data = nil
-		} else {
-			m.usage = compactUsage(ev.Summary)
-			for index := len(m.events) - 1; index >= 0; index-- {
-				if m.events[index].Kind == "usage.updated" {
-					m.events[index] = ev
-					return
-				}
-			}
-		}
-		m.events = append(m.events, ev)
 	case "approval.requested":
-		ev.Raw, ev.Data = nil, nil
 		if !m.readOnly && ev.Approval != nil && !m.hasApproval(ev.Approval.RequestID) {
 			m.approvals = append(m.approvals, *ev.Approval)
 		}
-		m.events = append(m.events, ev)
 		if !m.readOnly && ev.Approval != nil {
 			m.setFocus(focusApproval)
 		}
 	case "approval.resolved":
-		ev.Raw, ev.Data = nil, nil
 		if ev.Approval != nil {
 			m.removeApproval(ev.Approval.RequestID)
 			delete(m.submitting, ev.Approval.RequestID)
 		}
-		m.events = append(m.events, ev)
 		if len(m.approvals) == 0 {
 			m.setFocus(focusComposer)
 		} else if m.focus == focusApproval {
 			m.setFocus(focusApproval)
 		}
-	default:
-		if ev.Kind == "backend.unknown" {
-			if len(ev.Raw) > 240 {
-				ev.Raw = append(ev.Raw[:240:240], []byte("…")...)
-			}
-			ev.Data = nil
-		}
-		m.events = append(m.events, ev)
 	}
-}
-
-func (m *model) findEvent(itemID string, kinds ...string) int {
-	if itemID == "" {
-		return -1
-	}
-	for i := len(m.events) - 1; i >= 0; i-- {
-		if m.events[i].ItemID != itemID {
-			continue
-		}
-		for _, kind := range kinds {
-			if m.events[i].Kind == kind {
-				return i
-			}
-		}
-	}
-	return -1
 }
 
 func (m model) hasApproval(requestID string) bool {
@@ -725,76 +916,6 @@ func (m *model) removeApproval(requestID string) {
 			return
 		}
 	}
-}
-
-func (m *model) finishInterruptedItems(turnID string) {
-	if turnID == "" {
-		return
-	}
-	for i := range m.events {
-		entry := &m.events[i]
-		if entry.TurnID != turnID {
-			continue
-		}
-		switch entry.Kind {
-		case "command.started":
-			entry.Kind = "command.completed"
-			entry.Summary += " · interrupted"
-		case "tool.started":
-			entry.Kind = "tool.completed"
-			entry.Summary += " · interrupted"
-			entry.Data = nil
-		}
-	}
-}
-
-func (m *model) addCommandOutput(entry *event.Event, output event.Event) {
-	stream := "stdout"
-	if value, ok := output.Data["stream"].(string); ok && value != "" {
-		stream = value
-	}
-	m.appendOutput(entry, stream, output.Summary)
-}
-
-func (m *model) appendOutput(entry *event.Event, stream, value string) {
-	value = safeTerminalText(value)
-	data := entry.Data
-	if data == nil {
-		data = map[string]any{}
-	}
-	streams, _ := data["output"].(map[string]string)
-	if streams == nil {
-		streams = map[string]string{}
-	}
-	used, _ := data["outputBytes"].(int)
-	remaining := maxCommandOutputBytes - used
-	accepted := 0
-	if remaining > 0 {
-		prefix := utf8Prefix(value, remaining)
-		streams[stream] += prefix
-		accepted = len(prefix)
-		used += accepted
-	}
-	data["output"], data["outputBytes"] = streams, used
-	if accepted < len(value) {
-		data["omittedBytes"] = omittedOutputBytes(data) + len(value) - accepted
-	}
-	entry.Data = data
-}
-
-func outputBytes(entry event.Event) int {
-	value, _ := entry.Data["outputBytes"].(int)
-	return value
-}
-
-func omittedOutputBytes(data map[string]any) int {
-	value, _ := data["omittedBytes"].(int)
-	return value
-}
-
-func nestedItem(ev event.Event) map[string]any {
-	item, _ := ev.Data["item"].(map[string]any)
-	return item
 }
 
 func safeTerminalText(value string) string {
@@ -822,127 +943,230 @@ func utf8Prefix(value string, limit int) string {
 }
 
 func (m *model) refresh(follow bool) {
+	m.refreshViews(follow, !m.ready || m.telemetryViewport.AtBottom())
+}
+
+func (m *model) refreshViews(followConversation, followTelemetry bool) {
 	if !m.ready {
 		return
 	}
-	rows := make([]string, 0, len(m.events))
-	for _, ev := range m.events {
-		if !matchesFilter(ev, m.search.Value()) {
+	conversation := make([]string, 0, len(m.presentation.Conversation))
+	for _, item := range m.presentation.Conversation {
+		if item.Kind == presentation.ConversationReasoning {
+			conversation = append(conversation, m.style(item.Role).Render(fitLine("◈ "+item.Text, m.viewport.Width)))
 			continue
 		}
-		timestamp := ev.Timestamp.Local().Format("15:04:05")
-		detail := strings.TrimSpace(ev.Summary)
-		if detail == "" {
-			detail = ev.Source
+		label := "YOU"
+		if item.Kind == presentation.ConversationAssistant {
+			label = "ASSISTANT"
 		}
-		if ev.Kind == "backend.unknown" && len(ev.Raw) > 0 {
-			detail = fmt.Sprintf("%s  %s", detail, compact(string(ev.Raw), 240))
-		}
-		line := fmt.Sprintf("%s  %-18s %s", timestamp, ev.Kind, detail)
-		style := eventStyle(ev.Kind)
-		line = style.Render(line)
-		switch ev.Kind {
-		case "approval.requested":
-			approval := "action details unavailable"
-			if ev.Approval != nil {
-				approval = approvalDetail(*ev.Approval)
-			}
-			line = approvalStyle.Render(fmt.Sprintf("%s  ⚠ APPROVAL REQUIRED · %s", timestamp, fitLine(approval, max(1, m.viewport.Width-30))))
-		case "approval.resolved":
-			decision := string(ev.Decision)
-			style := resolvedStyle
-			if ev.Decision == event.ApprovalReject {
-				style = rejectedStyle
-			}
-			line = style.Render(fmt.Sprintf("%s  APPROVAL %s", timestamp, strings.ToUpper(decision)))
-		}
-		if ev.Kind == "command.started" || ev.Kind == "command.completed" {
-			if streams, ok := ev.Data["output"].(map[string]string); ok {
-				for _, name := range []string{"stdout", "stderr"} {
-					if output := strings.TrimRight(streams[name], "\n"); output != "" {
-						line += "\n          " + mutedStyle.Render(name+":") + "\n" + indent(output, "            ")
-					}
-				}
-			}
-			if omitted := omittedOutputBytes(ev.Data); omitted > 0 {
-				line += fmt.Sprintf("\n          %s", mutedStyle.Render(fmt.Sprintf("… %d output bytes omitted (limit %d)", omitted, maxCommandOutputBytes)))
-			}
-		}
-		if ev.Kind == "tool.started" {
-			if progress, ok := ev.Data["progress"].(string); ok {
-				line += "\n          " + mutedStyle.Render(progress)
-			}
-		}
-		if ev.ThreadID != "" && ev.Kind == "thread.started" {
-			line += "\n          " + mutedStyle.Render("thread "+ev.ThreadID)
-		}
-		rows = append(rows, line)
+		body := wrapPreservingLines(safeTerminalText(item.Text), m.viewport.Width)
+		conversation = append(conversation, m.style(item.Role).Render(label)+"\n"+m.activeTheme().Text.Render(body))
 	}
-	m.viewport.SetContent(strings.Join(rows, "\n\n"))
-	if follow {
+	m.viewport.SetContent(strings.Join(conversation, "\n\n"))
+	if followConversation {
 		m.viewport.GotoBottom()
+	}
+	m.ensureTelemetrySelection()
+	telemetry := make([]string, 0, len(m.presentation.Telemetry))
+	m.telemetryRows = make(map[int][2]int, len(m.presentation.Telemetry))
+	for index, item := range m.presentation.Telemetry {
+		if !item.Matches(m.search.Value()) {
+			continue
+		}
+		start := len(telemetry)
+		line := telemetryLine(item, m.telemetryViewport.Width, m.activityFrame)
+		role := item.Role
+		if item.State == presentation.RoleFailure || item.State == presentation.RoleWarning {
+			role = item.State
+		}
+		if m.showTelemetry && index == m.selectedTelemetry {
+			role = presentation.RoleSelected
+		}
+		if role == presentation.RoleSelected {
+			telemetry = append(telemetry, m.style(role).Render(line))
+		} else {
+			prefix, rest := splitCells(line, 11)
+			telemetry = append(telemetry, m.style(role).Render(prefix)+m.activeTheme().Text.Render(rest))
+		}
+		if m.expandedTelemetry[index] {
+			telemetry = append(telemetry, m.expandedTelemetryLines(item, m.telemetryViewport.Width)...)
+		}
+		m.telemetryRows[index] = [2]int{start, len(telemetry) - 1}
+	}
+	m.telemetryViewport.SetContent(strings.Join(telemetry, "\n"))
+	if followTelemetry {
+		m.telemetryViewport.GotoBottom()
 	}
 }
 
-func (m model) copyTimeline() string {
-	var rows []string
-	for _, ev := range m.events {
-		if !matchesFilter(ev, m.search.Value()) {
+func (m model) expandedTelemetryLines(item presentation.TelemetryItem, width int) []string {
+	const displayLimit = 8192
+	var lines []string
+	used, omitted := 0, 0
+	for _, detail := range item.ExpandedDetails() {
+		value := strings.ReplaceAll(safeTerminalText(detail.Value), "\t", "    ")
+		remaining := max(0, displayLimit-used)
+		if remaining == 0 {
+			omitted += len(value)
 			continue
 		}
-		line := strings.TrimSpace(ev.Kind + "  " + ev.Summary)
-		if ev.Kind == "approval.requested" && ev.Approval != nil {
-			line += "\n" + approvalDetail(*ev.Approval)
-		}
-		if streams, ok := ev.Data["output"].(map[string]string); ok {
-			for _, name := range []string{"stdout", "stderr"} {
-				if value := strings.TrimSpace(streams[name]); value != "" {
-					line += "\n" + name + ":\n" + value
-				}
+		shown := utf8Prefix(value, remaining)
+		used += len(shown)
+		omitted += len(value) - len(shown)
+		label := fitLine(detail.Label, 10)
+		prefix := "  ├ " + lipgloss.NewStyle().Width(10).Render(label) + " "
+		wrapped := strings.Split(wrapPreservingLines(shown, max(1, width-lipgloss.Width(prefix))), "\n")
+		for index, row := range wrapped {
+			if index == 0 {
+				lines = append(lines, m.style(presentation.RoleMuted).Render(truncateCells(prefix+row, width)))
+			} else {
+				lines = append(lines, truncateCells(strings.Repeat(" ", lipgloss.Width(prefix))+row, width))
 			}
+		}
+	}
+	if omitted > 0 {
+		lines = append(lines, truncateCells(fmt.Sprintf("  … %d bytes omitted; copy view for full text", omitted), width))
+	}
+	return lines
+}
+
+func telemetryLine(item presentation.TelemetryItem, width, frame int) string {
+	width = max(1, width)
+	glyph := item.Glyph
+	if item.State == presentation.RoleActive && (item.Kind == presentation.TelemetryTool || item.Kind == presentation.TelemetryCommand) {
+		glyph = activityGlyph(frame)
+	}
+	prefix := glyph + " " + fitLine(item.Type, 8)
+	if width <= lipgloss.Width(prefix)+3 {
+		return fitLine(prefix, width)
+	}
+	prefix = lipgloss.NewStyle().Width(11).Render(prefix)
+	primary := item.Primary
+	if primary == "" {
+		primary = item.Summary
+	}
+	detail, status := item.Detail, item.DisplayStatus
+	if width < 55 {
+		detail = ""
+	}
+	if width < 25 {
+		status = ""
+	}
+	detailWidth := min(20, lipgloss.Width(detail))
+	statusWidth := lipgloss.Width(status)
+	separators := 0
+	if detail != "" {
+		separators += 2
+	}
+	if status != "" {
+		separators += 2
+	}
+	primaryWidth := max(1, width-lipgloss.Width(prefix)-detailWidth-statusWidth-separators)
+	line := prefix + lipgloss.NewStyle().Width(primaryWidth).Render(fitLine(primary, primaryWidth))
+	if detail != "" {
+		line += "  " + fitLine(detail, detailWidth)
+	}
+	if status != "" {
+		line += "  " + status
+	}
+	return truncateCells(line, width)
+}
+
+func activityGlyph(frame int) string {
+	return []string{"◐", "◓", "◑", "◒"}[frame%4]
+}
+
+func truncateCells(value string, width int) string {
+	value = safeTerminalText(strings.ReplaceAll(value, "\n", " "))
+	if lipgloss.Width(value) <= width {
+		return value
+	}
+	var result strings.Builder
+	used := 0
+	for _, r := range value {
+		cellWidth := lipgloss.Width(string(r))
+		if used+cellWidth > max(0, width-1) {
+			break
+		}
+		result.WriteRune(r)
+		used += cellWidth
+	}
+	if width > 0 {
+		result.WriteRune('…')
+	}
+	return result.String()
+}
+
+func splitCells(value string, width int) (string, string) {
+	used := 0
+	for index, r := range value {
+		cellWidth := lipgloss.Width(string(r))
+		if used+cellWidth > width {
+			return value[:index], value[index:]
+		}
+		used += cellWidth
+	}
+	return value, ""
+}
+
+func wrapPreservingLines(value string, width int) string {
+	width = max(1, width)
+	var lines []string
+	for _, source := range strings.Split(value, "\n") {
+		var line strings.Builder
+		used := 0
+		for _, r := range source {
+			cellWidth := lipgloss.Width(string(r))
+			if used+cellWidth > width && line.Len() > 0 {
+				lines = append(lines, line.String())
+				line.Reset()
+				used = 0
+			}
+			line.WriteRune(r)
+			used += cellWidth
+		}
+		lines = append(lines, line.String())
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m model) copyTimeline() string {
+	return m.copyRows(nil)
+}
+
+func (m model) copyConversation() string {
+	surface := presentation.SurfaceConversation
+	return m.copyRows(&surface)
+}
+
+func (m model) copyTelemetry() string {
+	surface := presentation.SurfaceTelemetry
+	return m.copyRows(&surface)
+}
+
+func (m model) copyRows(surface *presentation.Surface) string {
+	var rows []string
+	for _, entry := range m.presentation.Order {
+		if surface != nil && entry.Surface != *surface {
+			continue
+		}
+		if entry.Surface == presentation.SurfaceConversation {
+			item := m.presentation.Conversation[entry.Index]
+			rows = append(rows, string(item.Kind)+"  "+item.Text)
+			continue
+		}
+		item := m.presentation.Telemetry[entry.Index]
+		if !item.Matches(m.search.Value()) {
+			continue
+		}
+		line := strings.TrimSpace(item.Label + "  " + item.Summary)
+		for _, detail := range item.Details {
+			line += "\n" + detail.Label + ":\n" + detail.Value
 		}
 		rows = append(rows, line)
 	}
 	return strings.Join(rows, "\n\n")
-}
-
-func matchesFilter(ev event.Event, query string) bool {
-	query = strings.TrimSpace(query)
-	if query == "" {
-		return true
-	}
-	parts := []string{ev.Kind, ev.Summary, ev.Source}
-	if ev.Approval != nil {
-		parts = append(parts, approvalDetail(*ev.Approval), ev.Approval.Reason)
-	}
-	if streams, ok := ev.Data["output"].(map[string]string); ok {
-		parts = append(parts, streams["stdout"], streams["stderr"])
-	}
-	return strings.Contains(strings.ToLower(strings.Join(parts, " ")), strings.ToLower(query))
-}
-
-func eventStyle(kind string) lipgloss.Style {
-	switch kind {
-	case "user.message":
-		return userStyle
-	case "message.delta", "message.completed":
-		return assistantStyle
-	case "command.started", "command.completed":
-		return commandStyle
-	case "error", "warning", "backend.unknown":
-		return errorStyle
-	default:
-		return lipgloss.NewStyle()
-	}
-}
-
-func eventModel(ev event.Event) string {
-	for _, key := range []string{"model", "modelName", "model_name", "toModel"} {
-		if value, ok := ev.Data[key].(string); ok && strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value)
-		}
-	}
-	return ""
 }
 
 func compactUsage(value string) string {
@@ -951,30 +1175,29 @@ func compactUsage(value string) string {
 	return strings.TrimSpace(value)
 }
 
-func indent(value, prefix string) string {
-	lines := strings.Split(value, "\n")
-	for i := range lines {
-		lines[i] = prefix + lines[i]
-	}
-	return strings.Join(lines, "\n")
-}
-
-func compact(value string, limit int) string {
-	value = strings.Join(strings.Fields(value), " ")
-	if len(value) <= limit {
-		return value
-	}
-	return utf8Prefix(value, limit) + "…"
-}
-
-func waitBatch(stream <-chan []event.Event) tea.Cmd {
+func waitBatch(stream <-chan []event.Event, stayOpen bool) tea.Cmd {
 	return func() tea.Msg {
 		batch, ok := <-stream
 		if !ok {
+			if stayOpen {
+				return streamClosedMsg{}
+			}
 			return tea.QuitMsg{}
 		}
 		return batchMsg(batch)
 	}
+}
+
+func nextPanelFrame(generation int) tea.Cmd {
+	return tea.Tick(time.Second/30, func(time.Time) tea.Msg {
+		return panelFrameMsg{generation: generation}
+	})
+}
+
+func nextActivityFrame(generation int) tea.Cmd {
+	return tea.Tick(250*time.Millisecond, func(time.Time) tea.Msg {
+		return activityFrameMsg{generation: generation}
+	})
 }
 
 func submitPrompt(ctx context.Context, submit func(context.Context, string) error, prompt string) tea.Cmd {

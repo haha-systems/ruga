@@ -1,31 +1,30 @@
 # Ruga
 
-Ruga is a minimal terminal coding harness for Codex App Server. It starts the
-local Codex server, opens a thread, normalizes server activity, publishes
-application events through Watermill GoChannel, and displays them in a
-scrollable Bubble Tea timeline. The compact header shows the project, Git
-branch when available, backend, model and latest token/context usage when the
-server provides them.
+Ruga is a terminal coding harness for Codex App Server and OpenAI-compatible
+backends. It normalizes backend activity, publishes application events through
+Watermill GoChannel, and presents conversation separately from operational
+telemetry. The compact header shows the project, branch when available,
+backend, model, activity, and token/context usage when provided.
 
 ## Run
 
 Requirements: Go 1.25+ and the Codex CLI available on `PATH`.
 
 ```sh
-go run ./cmd/harness
+go run ./cmd/ruga
 ```
 
 Use `-codex /path/to/codex` to select a different Codex binary. Type a prompt
-and press Enter to start a turn. Assistant text streams into the timeline and
-the status line shows whether Codex is idle, working, or in an error state.
-Use the arrow and page keys to scroll; new events follow the bottom only while
-the timeline is already at the bottom. Press `Ctrl+C` to exit.
+and press Enter to start a turn. The conversation view shows user messages,
+quiet reasoning/status lines, and assistant responses. Press `Ctrl+E` to reveal
+the event inspector; on wider terminals it slides in from the right, and on
+smaller terminals it uses the full width.
 
-Timeline events are buffered and coalesced for display so terminal rendering
-does not block App Server event processing. Command starts, output, and exit
-state share one timeline entry; each command retains at most 4 KiB of output,
-with an omission count when more arrives. File changes, tool calls, reasoning
-and status updates, and token usage have distinct event labels in the timeline.
+Events are buffered and reduced into presentation records without changing the
+recorded event stream. Tool and command activity appears as compact semantic
+lines in the inspector. Select a line and press Enter to reveal arguments,
+results, command output, and other details inline. Compact text is shortened to
+fit the terminal; the presentation record and copied text retain complete data.
 
 ## OpenAI-compatible backend
 
@@ -37,7 +36,7 @@ not require authentication can use an unset key.
 
 ```sh
 export OPENAI_API_KEY="your-key"
-go run ./cmd/harness -backend openai
+go run ./cmd/ruga -backend openai
 ```
 
 Use `-openai-base-url` and `-openai-model` to select a compatible endpoint and
@@ -50,8 +49,8 @@ session for the current directory and backend with `--resume`, or choose an
 older session by ID:
 
 ```sh
-go run ./cmd/harness --resume
-go run ./cmd/harness resume <session-id>
+go run ./cmd/ruga --resume
+go run ./cmd/ruga resume <session-id>
 ```
 
 Session state is stored separately from event recordings under
@@ -80,19 +79,19 @@ requires the system `patch` utility. `exec` runs in the repository with a
 ## Interactive controls
 
 Codex command, file-change, permission, and MCP approval requests appear in a
-highlighted prompt above the timeline and take keyboard focus. Press `y` or
-`Enter` to accept, `n` or `Esc` to reject. Decisions are sent back to Codex and
-recorded in the timeline.
+highlighted prompt above the conversation and take keyboard focus. Press `y`
+or `Enter` to accept, `n` or `Esc` to reject. Decisions are recorded in the
+event stream.
 
-`Tab` cycles focus between the composer, timeline, and an active approval.
-Timeline focus enables arrow and page scrolling, `g`/`Home` to jump to the top,
-and `G`/`End` to jump to the bottom. Press `/` while the timeline is focused to
-filter events by kind, source, text, command output, or approval details; `Enter`
-keeps the filter and `Esc` clears it. Press `c` to copy the filtered timeline to
-the system clipboard.
-Terminal text selection remains available for copying a smaller passage.
-`Esc` returns from the timeline to the composer or clears a composer draft.
-`Ctrl+X` interrupts the active turn; `Ctrl+C` exits.
+`Tab` cycles focus between the composer, conversation, visible inspector, and
+an active approval. In conversation focus, the arrow and page keys scroll, and
+`g`/`Home` and `G`/`End` jump to the top and bottom. In inspector focus,
+`Up`/`Down` selects items, `Enter` expands or collapses a selected item, page
+keys scroll, and `G`/`End` returns to follow mode. Press `/` to filter the
+inspector, `Esc` to clear the filter or return to the composer, and `c` to copy
+the focused view with full details. An unseen count appears when new telemetry
+arrives while the inspector is hidden or scrolled away. `Ctrl+X` interrupts
+the active turn; `Ctrl+C` exits.
 
 ## Recording and replay
 
@@ -102,9 +101,21 @@ Live sessions are recorded as normalized JSONL events under
 starts. Replay a session by its filename stem or by passing a JSONL path:
 
 ```sh
-go run ./cmd/harness replay session-abc123
-go run ./cmd/harness replay /path/to/session.jsonl
+go run ./cmd/ruga replay session-abc123
+go run ./cmd/ruga replay /path/to/session.jsonl
 ```
 
-Replay sends events through the same event bus and timeline used for live
-sessions. The replay timeline is read-only; press `Ctrl+C` to exit.
+Replay sends events through the same event bus and presentation reducer used
+for live sessions. The read-only TUI stays open after replay completes so the
+inspector can be explored; press `Ctrl+C` to exit.
+
+## Roadmap
+
+Deferred direction is recorded in [`docs/ROADMAP.md`](docs/ROADMAP.md):
+
+- **Interface:** multiline composer, Markdown rendering via `glamour`, selectable
+  themes, and a movable event stream (top/bottom/left/right).
+- **Cognition:** parallel tool calls, context compaction, memory via a Ghostdive
+  adapter, quota-aware cognition (QAC), and Cumulative Epistemic State (CES).
+
+The CES architecture itself lives in [`docs/CES.md`](docs/CES.md).

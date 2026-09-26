@@ -402,13 +402,21 @@ func normalizeWithValue(method string, raw json.RawMessage, value any) event.Eve
 	switch kind {
 	case "message.delta":
 		summary = messageDeltaText(data, value)
-		if summary == "" {
-			summary = method
-		}
+	case "message.started":
+		summary = ""
+	case "message.completed":
+		summary = firstString(item, "text", "content")
 	case "command.started":
 		summary = commandSummary(item, false)
+		data["command"] = stringField(item, "command")
 	case "command.completed":
 		summary = commandSummary(item, true)
+		if exitCode, ok := numberField(item, "exitCode"); ok {
+			data["exit_code"] = int(exitCode)
+		}
+		if output := stringField(item, "aggregatedOutput"); output != "" {
+			data["output"] = output
+		}
 	case "command.output":
 		summary = commandOutput(data)
 	case "file.changed":
@@ -420,6 +428,10 @@ func normalizeWithValue(method string, raw json.RawMessage, value any) event.Eve
 		}
 	case "tool.started", "tool.completed":
 		summary = toolSummary(item, kind == "tool.completed")
+		data["tool_name"] = toolSummary(item, false)
+		if success, ok := item["success"].(bool); ok {
+			data["error"] = !success
+		}
 	case "tool.progress":
 		summary = stringField(data, "message")
 	case "status.update":

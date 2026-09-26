@@ -269,7 +269,7 @@ Persist normalized events as JSONL.
 Support:
 
 ```text
-harness replay <session>
+ruga replay <session>
 ```
 
 Replay should drive the same event bus and TUI used during live operation.
@@ -318,7 +318,7 @@ Do not create an elaborate topic hierarchy unless actual consumers require it.
 
 ```text
 cmd/
-    harness/
+    ruga/
 
 internal/
     backend/

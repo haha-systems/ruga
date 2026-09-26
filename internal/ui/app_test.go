@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/haha-systems/ruga/internal/bus"
 	"github.com/haha-systems/ruga/internal/event"
 	"github.com/haha-systems/ruga/internal/recording"
@@ -62,8 +63,8 @@ func TestReplayFixtureDrivesTimelineDeterministically(t *testing.T) {
 			t.Fatal("timed out waiting for replay fixture")
 		}
 	}
-	if len(m.events) != 4 || m.events[2].Kind != "message.delta" || m.events[2].Summary != "Ruga uses a normalized event bus." {
-		t.Fatalf("fixture timeline = %+v", m.events)
+	if len(m.presentation.Conversation) != 2 || m.presentation.Conversation[1].Text != "Ruga uses a normalized event bus." || len(m.presentation.Telemetry) != 1 {
+		t.Fatalf("fixture presentation = %+v", m.presentation)
 	}
 	if m.status != "idle" || m.turnActive {
 		t.Fatalf("fixture turn status = %q active=%v", m.status, m.turnActive)
@@ -84,6 +85,23 @@ func TestReadOnlyReplayKeepsTimelineFocusAndIgnoresInterrupt(t *testing.T) {
 	got := updated.(model)
 	if cmd != nil || !got.turnActive || got.interrupting {
 		t.Fatalf("Ctrl+X changed replay state: active=%v interrupting=%v cmd=%v", got.turnActive, got.interrupting, cmd)
+	}
+}
+
+func TestCompletedReplayStaysOpenForInspection(t *testing.T) {
+	stream := make(chan []event.Event)
+	close(stream)
+	if _, ok := waitBatch(stream, true)().(streamClosedMsg); !ok {
+		t.Fatal("completed replay should stay open for inspection")
+	}
+	if _, ok := waitBatch(stream, false)().(tea.QuitMsg); !ok {
+		t.Fatal("closed live stream should quit")
+	}
+	m := interactiveTestModel()
+	m.readOnly = true
+	updated, cmd := m.Update(streamClosedMsg{})
+	if cmd != nil || updated.(model).notice != "Replay complete" {
+		t.Fatal("replay completion did not leave an inspection notice")
 	}
 }
 
@@ -123,47 +141,50 @@ func TestDeltaEventsCoalesceInTimeline(t *testing.T) {
 	for _, part := range []string{"Cod", "ex", " works"} {
 		m.add(event.Event{Kind: "message.delta", ItemID: "item-1", Summary: part, Timestamp: time.Now()})
 	}
-	if len(m.events) != 1 || m.events[0].Summary != "Codex works" {
-		t.Fatalf("coalesced events = %+v", m.events)
+	if len(m.presentation.Conversation) != 1 || m.presentation.Conversation[0].Text != "Codex works" || len(m.presentation.Conversation[0].Events) != 3 {
+		t.Fatalf("coalesced conversation = %+v", m.presentation.Conversation)
 	}
 }
 
 func TestCommandOutputIsBoundedAndLifecycleUpdatesInPlace(t *testing.T) {
 	m := model{}
+	const outputSize = 4096 + 17
 	m.add(event.Event{Kind: "command.started", ItemID: "cmd-1", Summary: "go test ./...", Timestamp: time.Now()})
-	m.add(event.Event{Kind: "command.output", ItemID: "cmd-1", Summary: strings.Repeat("x", maxCommandOutputBytes+17), Data: map[string]any{"stream": "stderr"}, Timestamp: time.Now()})
+	m.add(event.Event{Kind: "command.output", ItemID: "cmd-1", Summary: strings.Repeat("x", outputSize), Data: map[string]any{"stream": "stderr"}, Timestamp: time.Now()})
 	m.add(event.Event{Kind: "command.completed", ItemID: "cmd-1", Summary: "go test ./... · exit 1", Timestamp: time.Now()})
-	if len(m.events) != 1 {
-		t.Fatalf("command lifecycle created %d timeline entries, want 1", len(m.events))
+	if len(m.presentation.Telemetry) != 1 {
+		t.Fatalf("command lifecycle created %d telemetry entries, want 1", len(m.presentation.Telemetry))
 	}
-	entry := m.events[0]
-	if entry.Kind != "command.completed" || entry.Summary != "go test ./... · exit 1" {
+	entry := m.presentation.Telemetry[0]
+	if entry.Summary != "go test ./... · exit 1" || len(entry.Events) != 3 {
 		t.Fatalf("completed command = %+v", entry)
 	}
-	if outputBytes(entry) != maxCommandOutputBytes || omittedOutputBytes(entry.Data) != 17 {
-		t.Fatalf("output limits = retained %d, omitted %d", outputBytes(entry), omittedOutputBytes(entry.Data))
-	}
-	if got := len(entry.Data["output"].(map[string]string)["stderr"]); got != maxCommandOutputBytes {
-		t.Fatalf("retained output bytes = %d, want %d", got, maxCommandOutputBytes)
+	if len(entry.Details) != 1 || len(entry.Details[0].Value) != outputSize {
+		t.Fatal("presentation discarded command output")
 	}
 	m.viewport = viewport.New(100, 20)
+	m.telemetryViewport = viewport.New(100, 20)
 	m.ready = true
 	m.refresh(true)
-	if view := m.viewport.View(); !strings.Contains(view, "stderr:") || !strings.Contains(view, "17 output bytes omitted") {
-		t.Fatalf("command output rendering is missing details: %q", view)
+	if view := m.telemetryViewport.View(); strings.Contains(view, "stderr:") {
+		t.Fatalf("normal telemetry should stay compact: %q", view)
+	}
+	if copied := m.copyTelemetry(); !strings.Contains(copied, strings.Repeat("x", outputSize)) {
+		t.Fatalf("telemetry copy lost the complete command output")
 	}
 }
 
 func TestCommandOutputPreservesUTF8Boundary(t *testing.T) {
 	m := model{}
 	m.add(event.Event{Kind: "command.started", ItemID: "cmd-utf8"})
-	m.add(event.Event{Kind: "command.output", ItemID: "cmd-utf8", Summary: strings.Repeat("a", maxCommandOutputBytes-1) + "🙂"})
-	output := m.events[0].Data["output"].(map[string]string)["stdout"]
-	if !utf8.ValidString(output) || len(output) > maxCommandOutputBytes {
-		t.Fatalf("stored output is invalid or too large: bytes=%d", len(output))
+	full := strings.Repeat("a", 8191) + "🙂"
+	m.add(event.Event{Kind: "command.output", ItemID: "cmd-utf8", Summary: full})
+	if m.presentation.Telemetry[0].Details[0].Value != full {
+		t.Fatal("presentation lost UTF-8 command output")
 	}
-	if omittedOutputBytes(m.events[0].Data) != len("🙂") {
-		t.Fatalf("omitted bytes = %d, want %d", omittedOutputBytes(m.events[0].Data), len("🙂"))
+	display := strings.Join(m.expandedTelemetryLines(m.presentation.Telemetry[0], 60), "\n")
+	if !utf8.ValidString(display) || !strings.Contains(display, "bytes omitted") {
+		t.Fatalf("expanded UTF-8 output was malformed or unbounded: %q", display[len(display)-min(200, len(display)):])
 	}
 }
 
@@ -172,13 +193,13 @@ func TestToolProgressAndCompletionUpdateSingleEntry(t *testing.T) {
 	m.add(event.Event{Kind: "tool.started", ItemID: "tool-1", Summary: "search"})
 	m.add(event.Event{Kind: "tool.progress", ItemID: "tool-1", Summary: "Found 3 results"})
 	m.add(event.Event{Kind: "tool.completed", ItemID: "tool-1", Summary: "search · succeeded"})
-	if len(m.events) != 1 || m.events[0].Kind != "tool.completed" || m.events[0].Summary != "search · succeeded" {
-		t.Fatalf("tool lifecycle entries = %+v", m.events)
+	if len(m.presentation.Telemetry) != 1 || m.presentation.Telemetry[0].Summary != "search · succeeded" || len(m.presentation.Telemetry[0].Events) != 3 {
+		t.Fatalf("tool lifecycle entries = %+v", m.presentation.Telemetry)
 	}
 }
 
 func TestFirstClassEventsRemainReadable(t *testing.T) {
-	m := model{viewport: viewport.New(120, 20), ready: true}
+	m := model{viewport: viewport.New(120, 20), telemetryViewport: viewport.New(120, 20), ready: true}
 	for _, ev := range []event.Event{
 		{Kind: "file.changed", ItemID: "file-1", Summary: "fileChange internal/ui/app.go"},
 		{Kind: "file.changed", ItemID: "file-1", Summary: "update internal/ui/app.go"},
@@ -190,15 +211,275 @@ func TestFirstClassEventsRemainReadable(t *testing.T) {
 	} {
 		m.add(ev)
 	}
-	if len(m.events) != 4 {
-		t.Fatalf("file and tool lifecycles should coalesce, got %d rows", len(m.events))
+	if len(m.presentation.Telemetry) != 3 || len(m.presentation.Conversation) != 1 {
+		t.Fatalf("file, tool, usage, and status reduction = %+v", m.presentation)
 	}
 	m.refresh(true)
-	view := m.viewport.View()
-	for _, want := range []string{"file.changed", "internal/ui/app.go", "tool.completed", "docs/search · succeeded", "status.update", "Checking the build", "usage.updated", "50 total tokens"} {
+	view := m.telemetryViewport.View()
+	for _, want := range []string{"Δ PATCH", "internal/ui/app.go", "⌕ SEARCH", "docs/search · succeeded", "USAGE", "50 total tokens"} {
 		if !strings.Contains(view, want) {
-			t.Errorf("timeline rendering %q does not contain %q", view, want)
+			t.Errorf("telemetry rendering %q does not contain %q", view, want)
 		}
+	}
+	if conversation := m.viewport.View(); !strings.Contains(conversation, "Checking the build") || strings.Contains(conversation, "internal/ui/app.go") || strings.Contains(conversation, "docs/search") {
+		t.Fatalf("conversation contains operational telemetry: %q", conversation)
+	}
+}
+
+func TestSemanticTelemetryTruncatesDisplayButCopyKeepsFullText(t *testing.T) {
+	m := model{viewport: viewport.New(40, 5), telemetryViewport: viewport.New(40, 5), ready: true, width: 40, height: 8}
+	full := "search " + strings.Repeat("very-long-query/", 8)
+	m.add(event.Event{Kind: "tool.started", ItemID: "tool-1", Summary: full})
+	m.refresh(true)
+	if view := m.telemetryViewport.View(); !strings.Contains(view, "…") || strings.Contains(view, full) {
+		t.Fatalf("telemetry display did not truncate: %q", view)
+	}
+	if copied := m.copyTimeline(); !strings.Contains(copied, full) {
+		t.Fatalf("copy lost full telemetry summary: %q", copied)
+	}
+	if m.presentation.Telemetry[0].Summary != full {
+		t.Fatal("presentation model truncated the source text")
+	}
+}
+
+func TestInspectorTogglePreservesIndependentViewportPositions(t *testing.T) {
+	m := interactiveTestModel()
+	m.resize(100, 12)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
+	m = settlePanel(t, updated.(model))
+	if !m.showTelemetry || !strings.Contains(m.View(), "EVENT STREAM") {
+		t.Fatal("Ctrl+E did not open the event inspector")
+	}
+	for i := range 18 {
+		m.add(event.Event{Kind: "user.message", Summary: fmt.Sprintf("chat row %d", i)})
+		m.add(event.Event{Kind: "tool.started", ItemID: fmt.Sprintf("tool-%d", i), Summary: fmt.Sprintf("search row %d", i)})
+	}
+	m.refreshViews(true, true)
+	if !m.viewport.AtBottom() || !m.telemetryViewport.AtBottom() {
+		t.Fatal("new conversation and telemetry should initially follow")
+	}
+	m.telemetryViewport.LineUp(3)
+	if m.telemetryViewport.AtBottom() {
+		t.Fatal("manual telemetry scroll did not move away from the bottom")
+	}
+	m.add(event.Event{Kind: "user.message", Summary: "latest chat"})
+	m.add(event.Event{Kind: "tool.started", ItemID: "new-tool", Summary: "new search"})
+	m.refreshViews(m.viewport.AtBottom(), m.telemetryViewport.AtBottom())
+	if !m.viewport.AtBottom() || m.telemetryViewport.AtBottom() {
+		t.Fatal("new activity forced the scrolled telemetry viewport to follow")
+	}
+	offset := m.telemetryViewport.YOffset
+	m.setFocus(focusTelemetry)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
+	m = settlePanel(t, updated.(model))
+	if m.showTelemetry || m.focus == focusTelemetry || strings.Contains(m.View(), "EVENT STREAM") {
+		t.Fatal("Ctrl+E did not hide the inspector and restore focus")
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
+	m = settlePanel(t, updated.(model))
+	if !m.showTelemetry || m.telemetryViewport.YOffset != offset {
+		t.Fatalf("inspector position was lost across toggle: %d to %d", offset, m.telemetryViewport.YOffset)
+	}
+}
+
+func TestNarrowInspectorUsesFullWidthAndKeepsConversation(t *testing.T) {
+	m := interactiveTestModel()
+	m.resize(50, 10)
+	m.add(event.Event{Kind: "user.message", Summary: "keep this message"})
+	m.add(event.Event{Kind: "tool.started", ItemID: "tool-1", Summary: "search"})
+	m.refresh(true)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
+	m = updated.(model)
+	if !strings.Contains(m.View(), "EVENT STREAM") || strings.Contains(m.View(), "keep this message") {
+		t.Fatalf("narrow inspector layout = %q", m.View())
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
+	m = updated.(model)
+	if !strings.Contains(m.View(), "keep this message") {
+		t.Fatal("conversation was lost after closing narrow inspector")
+	}
+}
+
+func TestSmallTerminalKeepsEveryRenderedLineWithinWidth(t *testing.T) {
+	m := interactiveTestModel()
+	m.resize(25, 8)
+	m.add(event.Event{Kind: "user.message", Summary: strings.Repeat("conversation text ", 5)})
+	m.add(event.Event{Kind: "tool.started", ItemID: "tool-1", Summary: "search", Data: map[string]any{"tool_name": "search", "arguments": `{"query":"long-query-for-small-terminals"}`}})
+	m.refreshViews(true, true)
+	for _, showInspector := range []bool{false, true} {
+		if showInspector {
+			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
+			m = updated.(model)
+			m.setFocus(focusTelemetry)
+			m.toggleTelemetryExpansion()
+		}
+		for _, line := range strings.Split(m.View(), "\n") {
+			if width := lipgloss.Width(line); width > 25 {
+				t.Fatalf("line width %d exceeds terminal width: %q", width, line)
+			}
+		}
+	}
+}
+
+func TestPanelAnimationCanReverseWhileEventsKeepArriving(t *testing.T) {
+	m := interactiveTestModel()
+	m.resize(100, 14)
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
+	m = updated.(model)
+	if cmd == nil || !m.panelAnimating || m.panelWidth != 0 {
+		t.Fatal("opening the inspector did not schedule a transition")
+	}
+	openingGeneration := m.panelGeneration
+	updated, _ = m.Update(panelFrameMsg{generation: openingGeneration})
+	m = updated.(model)
+	if m.panelWidth <= 0 || m.panelWidth >= desiredPanelWidth(m.width) {
+		t.Fatalf("first transition width = %d", m.panelWidth)
+	}
+	updated, _ = m.Update(batchMsg{{Kind: "user.message", Summary: "arrived during motion"}})
+	m = updated.(model)
+	if len(m.presentation.Conversation) != 1 {
+		t.Fatal("animation blocked event reduction")
+	}
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
+	m = updated.(model)
+	if cmd == nil || m.showTelemetry || m.panelGeneration == openingGeneration {
+		t.Fatal("closing during an opening transition was not scheduled")
+	}
+	staleWidth := m.panelWidth
+	updated, _ = m.Update(panelFrameMsg{generation: openingGeneration})
+	m = updated.(model)
+	if m.panelWidth != staleWidth {
+		t.Fatal("stale animation frame changed panel width")
+	}
+	m = settlePanel(t, m)
+	if m.panelWidth != 0 || !strings.Contains(m.View(), "arrived during motion") {
+		t.Fatal("reversed transition lost conversation or left the panel visible")
+	}
+}
+
+func TestHiddenActivityIndicatorTicksOnlyForActiveTools(t *testing.T) {
+	m := interactiveTestModel()
+	m.resize(100, 14)
+	updated, cmd := m.Update(batchMsg{
+		{Kind: "turn.started", TurnID: "turn-1"},
+		{Kind: "tool.started", TurnID: "turn-1", ItemID: "tool-1", Summary: "search", Data: map[string]any{"tool_name": "search"}},
+	})
+	m = updated.(model)
+	if cmd == nil || !m.activityTicking || m.presentation.Activity.ActiveTools != 1 || m.unseenTelemetry != 2 {
+		t.Fatalf("active hidden activity = %+v, unseen=%d", m.presentation.Activity, m.unseenTelemetry)
+	}
+	if header := m.headerLine(); !strings.Contains(header, "LOG 2 +2") || !strings.Contains(header, "SEARCH") || !strings.Contains(header, "◐") {
+		t.Fatalf("hidden activity indicator = %q", header)
+	}
+	activeGeneration := m.activityGeneration
+	updated, cmd = m.Update(activityFrameMsg{generation: activeGeneration})
+	m = updated.(model)
+	if cmd == nil || m.activityFrame != 1 || !strings.Contains(m.headerLine(), "◓") {
+		t.Fatal("active tool did not advance its restrained indicator")
+	}
+	updated, _ = m.Update(batchMsg{
+		{Kind: "tool.completed", TurnID: "turn-1", ItemID: "tool-1", Summary: "search · succeeded", Data: map[string]any{"tool_name": "search"}},
+		{Kind: "turn.completed", TurnID: "turn-1", Data: map[string]any{"status": "completed"}},
+	})
+	m = updated.(model)
+	if m.activityTicking || m.presentation.Activity.ActiveTools != 0 {
+		t.Fatal("activity animation continued after tools completed")
+	}
+	updated, cmd = m.Update(activityFrameMsg{generation: activeGeneration})
+	if cmd != nil || updated.(model).activityFrame != m.activityFrame {
+		t.Fatal("stale activity frame changed an idle view")
+	}
+}
+
+func TestUnseenTelemetryWaitsForExplicitFollow(t *testing.T) {
+	m := interactiveTestModel()
+	m.showTelemetry = true
+	m.resize(100, 10)
+	for i := range 20 {
+		m.add(event.Event{Kind: "tool.started", ItemID: fmt.Sprintf("tool-%d", i), Summary: "search"})
+	}
+	m.refreshViews(true, true)
+	m.setFocus(focusTelemetry)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	m = updated.(model)
+	if m.telemetryFollowing || m.telemetryViewport.AtBottom() {
+		t.Fatal("PageUp did not suspend telemetry follow")
+	}
+	updated, _ = m.Update(batchMsg{{Kind: "tool.started", ItemID: "new-tool", Summary: "read"}})
+	m = updated.(model)
+	if m.unseenTelemetry != 1 || m.telemetryViewport.AtBottom() || !strings.Contains(m.viewHeading(), "+1") {
+		t.Fatal("new telemetry did not remain unseen while scrolled away")
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	m = updated.(model)
+	if m.unseenTelemetry != 0 || !m.telemetryFollowing || !m.telemetryViewport.AtBottom() {
+		t.Fatal("End did not restore follow and clear unseen activity")
+	}
+}
+
+func TestTelemetrySelectionExpandsInlineAndRevealsTruncatedText(t *testing.T) {
+	m := interactiveTestModel()
+	m.showTelemetry = true
+	m.resize(65, 18)
+	query := strings.Repeat("ResumeThread", 6)
+	m.add(event.Event{Kind: "tool.started", ItemID: "search-1", Summary: "search", Data: map[string]any{"tool_name": "search", "arguments": fmt.Sprintf(`{"query":%q}`, query)}})
+	m.add(event.Event{Kind: "tool.completed", ItemID: "search-1", Summary: "search · succeeded", Data: map[string]any{"tool_name": "search", "result": "6 hits"}})
+	m.add(event.Event{Kind: "tool.started", ItemID: "read-2", Summary: "read", Data: map[string]any{"tool_name": "read", "arguments": `{"path":"internal/session/session.go"}`}})
+	m.refreshViews(true, true)
+	m.setFocus(focusTelemetry)
+	if m.selectedTelemetry != 1 {
+		t.Fatalf("initial selection = %d, want latest item", m.selectedTelemetry)
+	}
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	m = updated.(model)
+	if m.selectedTelemetry != 0 || m.telemetryFollowing {
+		t.Fatalf("selection/follow after Up = %d/%v", m.selectedTelemetry, m.telemetryFollowing)
+	}
+	compact := m.telemetryViewport.View()
+	if !strings.Contains(compact, "…") || strings.Contains(compact, query) {
+		t.Fatalf("compact line did not truncate the long query: %q", compact)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(model)
+	if !m.expandedTelemetry[0] {
+		t.Fatal("Enter did not expand selected item")
+	}
+	if expanded := m.telemetryViewport.View(); !strings.Contains(expanded, "query") || !strings.Contains(expanded, query[:30]) || !strings.Contains(expanded, "6 hits") {
+		t.Fatalf("expanded telemetry omitted details: %q", expanded)
+	}
+	if m.presentation.Telemetry[0].Primary != fmt.Sprintf("%q", query) {
+		t.Fatal("compact truncation changed the stored primary value")
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(model)
+	if m.expandedTelemetry[0] {
+		t.Fatal("Enter did not collapse selected item")
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	m = updated.(model)
+	if m.selectedTelemetry != 1 || !m.telemetryFollowing || !m.telemetryViewport.AtBottom() {
+		t.Fatal("End did not restore follow at the latest item")
+	}
+}
+
+func TestExpandedCommandOutputIsBoundedOnlyForDisplay(t *testing.T) {
+	m := interactiveTestModel()
+	m.showTelemetry = true
+	m.resize(70, 12)
+	full := strings.Repeat("long output line\n", 700)
+	m.add(event.Event{Kind: "command.started", ItemID: "cmd-1", Summary: "go test ./...", Data: map[string]any{"command": "go test ./..."}})
+	m.add(event.Event{Kind: "command.output", ItemID: "cmd-1", Summary: full, Data: map[string]any{"stream": "stderr"}})
+	m.refreshViews(true, true)
+	m.setFocus(focusTelemetry)
+	m.toggleTelemetryExpansion()
+	if content := m.telemetryViewport.View(); !strings.Contains(content, "stderr") {
+		t.Fatalf("expanded command output is missing: %q", content)
+	}
+	if !strings.Contains(m.copyTelemetry(), full) || m.presentation.Telemetry[0].Details[0].Value != full {
+		t.Fatal("expanded display limit discarded command output")
+	}
+	if len(m.telemetryViewport.View()) > 2000 {
+		t.Fatal("viewport rendered unbounded command output")
 	}
 }
 
@@ -230,11 +511,11 @@ func TestInterruptMarksActiveCommandsAndToolsComplete(t *testing.T) {
 	if m.status != "interrupted" || m.turnActive {
 		t.Fatalf("interrupted turn state = %q active=%v", m.status, m.turnActive)
 	}
-	if m.events[0].Kind != "command.completed" || !strings.Contains(m.events[0].Summary, "interrupted") {
-		t.Fatalf("command after interrupt = %+v", m.events[0])
+	if m.presentation.Telemetry[0].Status != "stopped" || m.presentation.Telemetry[0].DisplayStatus != "! STOPPED" {
+		t.Fatalf("command after interrupt = %+v", m.presentation.Telemetry[0])
 	}
-	if m.events[1].Kind != "tool.completed" || !strings.Contains(m.events[1].Summary, "interrupted") {
-		t.Fatalf("tool after interrupt = %+v", m.events[1])
+	if m.presentation.Telemetry[1].Status != "stopped" || m.presentation.Telemetry[1].DisplayStatus != "! STOPPED" {
+		t.Fatalf("tool after interrupt = %+v", m.presentation.Telemetry[1])
 	}
 }
 
@@ -431,7 +712,19 @@ func interactiveTestModel() model {
 	input.Focus()
 	return model{
 		input: input, ctx: context.Background(), status: "idle", focus: focusComposer,
-		submitting: make(map[string]bool), viewport: viewport.New(90, 12), ready: true,
-		width: 90, height: 20,
+		submitting: make(map[string]bool), viewport: viewport.New(90, 12), telemetryViewport: viewport.New(90, 12), ready: true,
+		width: 90, height: 20, selectedTelemetry: -1, telemetryFollowing: true,
 	}
+}
+
+func settlePanel(t *testing.T, m model) model {
+	t.Helper()
+	for frame := 0; frame < 40 && m.panelAnimating; frame++ {
+		updated, _ := m.Update(panelFrameMsg{generation: m.panelGeneration})
+		m = updated.(model)
+	}
+	if m.panelAnimating {
+		t.Fatalf("panel animation did not settle: width=%d position=%f", m.panelWidth, m.panelPosition)
+	}
+	return m
 }
