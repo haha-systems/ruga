@@ -13,14 +13,19 @@
 #     task: task1
 
 tasks:
-    lint:
-        allow_failure: true
-        command:
-          - golint $(go list ./... | grep -v /vendor/)
-          - go vet $(go list ./... | grep -v /vendor/)
+  lint:
+    allow_failure: true
+    command:
+      - golangci-lint run
 
-    build:
-        command: go build -o bin/ ./...
-        env:
-          GOOS: darwin
-          GOARCH: arm64
+  lint-fix:
+      allow_failure: true
+      command:
+        - golangci-lint run --fix
+        - go vet $(go list ./... | grep -v /vendor/)
+
+  build:
+      command: go build -o bin/ ./...
+      env:
+        GOOS: darwin
+        GOARCH: arm64
