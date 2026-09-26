@@ -15,9 +15,14 @@ records the *why* and the seams, while the PRDs hold the contracts.
 | Sessions, tool runtime, OpenAI-compatible backend | Implemented | `PRD-2.md` |
 | Semantic TUI (presentation, inspector, semantic roles) | In progress | `PRD-3.md` |
 | Multiline composer | Design | §6 |
-| Markdown rendering | Design | §7 |
-| Selectable themes | Design | §8 |
+| Markdown rendering | Implemented | §7 |
+| Selectable themes | Design (theme carries Markdown style) | §8 |
 | Movable event stream | Implemented | §9, `PRD-3.md` Slice 5 |
+| Configuration file | Design | §10 |
+| Clear focused-panel state | Design | §11 |
+| Approval modes | Design | §12 |
+| Approval takes focus | Design | §13 |
+| Quota stats in the top line | Design | §14 |
 | Parallel tool calls | Design | this document, §1 |
 | Context compaction for OpenAI-compatible | Design (blocked on usage accounting) | §2 |
 | Memory via Ghostdive adapter | Design (blocked on context pressure) | §3 |
@@ -417,60 +422,34 @@ Independent and self-contained. Safe to do any time; low risk.
 
 ---
 
-## 7. Markdown rendering
+## 7. Markdown rendering — implemented
 
-### Intent
+Completed assistant responses render as styled Markdown via
+`charmbracelet/glamour` (`internal/ui/markdown.go`). `renderAssistantMarkdown`
+computes the plain wrapped text first and upgrades to glamour only when the
+terminal is wide enough (`minimumMarkdownWidth`) and colour is supported;
+otherwise it returns the plain text with `rendered=false` and the caller keeps
+the normal text style. Styling flows through `Theme.MarkdownStyle`, so Markdown
+and the semantic roles share one theme (`internal/ui/theme.go`).
 
-Render assistant responses (and reasoning where useful) as styled Markdown —
-headings, lists, emphasis, code blocks — instead of plain wrapped text.
+How it landed against the original plan:
 
-### What already exists
+- **Assistant-only.** Only `ConversationAssistant` items render as Markdown;
+  reasoning/status lines keep their compact semantic form (PRD-3 §7) and tool
+  telemetry keeps its glyph grammar (PRD-3 §4). Tool and command output are
+  never rendered as Markdown.
+- **On completion, not per delta.** Rendering keys off a new
+  `ConversationItem.Completed` flag (`internal/presentation`) instead of
+  re-rendering on every `message.delta`, which was the main risk in the original
+  design.
+- **Faithful source.** The presentation layer keeps the raw text; Markdown is a
+  display concern only, so copied text stays exact.
+- **Graceful fallback.** Narrow widths and colourless terminals fall back to the
+  existing plain wrapped text (`fitLine`/`wrapPreservingLines` unchanged).
 
-Conversation items render as wrapped plain text (`internal/ui/app.go`,
-`wrapPreservingLines`). `internal/presentation` already owns the
-`ConversationItem` with `Kind` (user/assistant/reasoning) and `Role`, which is
-the right place to decide "this is Markdown" versus "this is a status line".
-
-### Approach
-
-Use `charmbracelet/glamour`, the rendering library behind the `glow` CLI. It is
-the natural fit alongside the existing Bubble Tea / Lip Gloss stack and shares
-its styling model.
-
-- Render only assistant content as Markdown. Reasoning/status lines stay compact
-  semantic lines per PRD-3 §7, and tool telemetry stays glyph grammar per PRD-3
-  §4.
-- Drive glamour's style from the active theme (§8) so Markdown and semantic
-  roles agree. Glamour accepts a style config; map theme colours into it rather
-  than hard-coding.
-- Compute width from the viewport, exactly as `fitLine`/`wrapPreservingLines` do
-  today.
-
-### Seams
-
-- A render step in the conversation renderer, selected by
-  `ConversationItem.Kind`.
-- Theme: add a glamour style (or `StyleConfig`) field to `Theme` so it flows
-  through `internal/ui/theme.go`, the only place that maps meaning to style.
-
-### Constraints
-
-- Streaming: content arrives incrementally as `message.delta`. Re-rendering the
-  whole item on every delta can be expensive; render on completion, or
-  incrementally with care. This is the main risk and the main reason this is not
-  trivial.
-- The presentation layer must keep the raw text; Markdown is a display concern
-  only, and copied text (`c`) should remain faithful.
-- Width and terminal capability matter: fall back to plain text when the width
-  is small or colour is unsupported.
-- Do not render tool output or command output as Markdown.
-
-### Trigger
-
-Independent, but best done after the semantic TUI stabilises and ideally
-alongside themes (§8), since both are presentation styling. New dependency:
-`glamour` (and its transitive deps) — justified by the clear value over
-hand-rolled Markdown.
+New dependency: `glamour` (with its transitive deps), justified by the clear
+value over hand-rolled Markdown. The §8 theme work already has the
+`MarkdownStyle` field it needs.
 
 ---
 
@@ -531,6 +510,160 @@ placement contract and layout are documented in `PRD-3.md` Slice 5.
 
 ---
 
+## 10. Configuration file
+
+### Intent
+
+Let users keep a small set of Ruga defaults across runs without repeating
+flags, while keeping command-line overrides obvious.
+
+### Design
+
+- Use a human-editable file under the user's XDG config directory.
+- Define precedence as command-line flags, then file values, then built-in
+  defaults. Report malformed or unsupported values with the setting name.
+- Start with stable user preferences such as panel placement and theme. Decide
+  whether backend and model belong in this file separately from their existing
+  session-resume behavior.
+
+### Seams and constraints
+
+- Keep loading and precedence in command setup, with environment lookup
+  injectable for tests.
+- Persist credential environment-variable names only; never persist API keys.
+- Choose a simple file format before implementation and avoid a large config
+  framework for this small set of settings.
+- Test precedence, defaults, invalid values, and missing files.
+
+### Trigger
+
+Useful once a few stable preferences have accumulated. The existing flags remain
+the contract while the file format and supported keys are designed.
+
+---
+
+## 11. Clear focused-panel state
+
+### Intent
+
+Make the pane that currently receives keyboard navigation easy to identify at
+a glance, including when the conversation and event stream are side by side or
+stacked.
+
+### Approach
+
+- Give the focused pane a stronger heading or boundary treatment and keep the
+  unfocused pane visually quieter.
+- Reflect actual keyboard focus, not merely which pane has recent activity.
+- Resolve emphasis through semantic theme roles so every theme, including
+  monochrome, can show the distinction.
+
+### Seams and constraints
+
+- `internal/ui/app.go` owns focus and pane headings; `internal/ui/theme.go`
+  resolves semantic styling.
+- Keep the indicator legible in narrow-terminal fallback and all four panel
+  placements. Do not rely on colour alone.
+- Preserve existing navigation and inspector scroll position.
+
+### Trigger
+
+Independent UI refinement now that movable panel placement is implemented.
+
+---
+
+## 12. Approval modes
+
+### Intent
+
+Let users choose an explicit approval policy for operations that request
+permission, with clear and predictable behavior across supported backends.
+
+### Design
+
+Specify the available modes and their exact effects before implementation. Keep
+the current ask-before-approval behavior as the default, and define which
+operations each mode can approve, reject, or leave to an interactive prompt.
+
+### Seams and constraints
+
+- Keep policy provider-neutral in command/session configuration; adapt it only
+  through the backend's approval capability.
+- A backend that cannot enforce a selected mode must report that limitation
+  rather than silently applying a different policy.
+- Never let a broad convenience mode obscure which operation is being approved.
+
+### Trigger
+
+Design after the configuration-file settings and backend capability boundaries
+are understood. Approval policy affects execution, so define its contract in a
+PRD before changing behavior.
+
+---
+
+## 13. Approval takes focus
+
+### Intent
+
+When an approval request arrives, move keyboard focus to its decision controls
+so the request cannot be missed while the user is working in another pane.
+
+### Behavior to define
+
+- Save the current focus target when the approval panel opens and restore it
+  after the request is resolved or dismissed.
+- Make the pending request visibly urgent while keeping its requested action
+  and available decisions clear.
+- Define behavior for multiple pending requests and for read-only replay, where
+  no live decision can be submitted.
+
+### Seams and constraints
+
+- Coordinate the approval state in `internal/ui/app.go` with normalized
+  approval events and the optional `backend.Interactive` capability.
+- Keep manual event-inspector navigation stable when focus changes, consistent
+  with the PRD-3 inspector contract.
+
+### Trigger
+
+Pair with approval-mode design (§12), while preserving a small independent UI
+slice that improves the existing interactive approval flow.
+
+---
+
+## 14. Quota stats in the top line
+
+### Intent
+
+Show a compact view of available quota or usage in the top status line, where it
+can inform the user without taking space from the conversation or inspector.
+
+### Approach
+
+- Render only quota fields supplied by the backend and omit unavailable
+  metadata. Keep the line compact and use semantic theme roles.
+- Distinguish provider-reported quota from token usage or local estimates; do
+  not present an estimate as an account limit.
+- Normalize provider data into the event/presentation model before rendering.
+
+### Seams and constraints
+
+- `internal/backend/<provider>` captures provider usage; `internal/event` and
+  `internal/presentation` normalize and summarize it; `internal/ui` renders the
+  top line.
+- Reuse `usage.updated` where its fields match. Define a separate normalized
+  field when quota and per-request token usage differ.
+- OpenAI-compatible usage accounting (§2) is a prerequisite for displaying
+  those fields on that backend; retain omission for providers without quota
+  data.
+
+### Trigger
+
+Start with the provider that already exposes reliable quota data, then add
+providers as their normalized usage becomes available.
+
+---
+
 ## Dependency summary
 
 ```text
@@ -549,13 +682,27 @@ Interface track, largely independent of the cognition stack:
 ```text
 markdown rendering (§7) ──▶ themes (§8)   share the theme abstraction
 multiline composer (§6)   — independent
+focused-panel state (§11) — after movable event stream (§9)
+approval takes focus (§13) — builds on approval flow
+```
+
+Cross-cutting roadmap dependencies:
+
+```text
+configuration file (§10) ──▶ stable user preference defaults
+approval modes (§12) ──▶ approval focus behavior (§13)
+usage accounting (§2) ──▶ quota stats in top line (§14)
 ```
 
 Suggested order if pursued: **§1** (cheap, independent) → **usage accounting** →
 **§2** → **§5** → **§4** → **§3** prefix layer. The tool-level memory slice of
-§3 can land at any time. The interface track (§6–§8) can run in parallel with or
-between the cognition work; a reasonable order is **§8** (unblocks §7), **§6**,
-then **§7**. None of them block the cognition stack.
+§3 can land at any time. The interface track (§6–§11, §13–§14) can run in
+parallel with or between the cognition work; §7 is done and §8 (which builds on
+the `MarkdownStyle` seam it added) is next there, followed by **§6**, **§9**,
+**§11**, then **§14** once usage data is available. Approval work (§12–§13) and
+the configuration file (§10) are cross-cutting and need their contracts settled
+before implementation. None of
+these block the cognition stack.
 
 ## Non-goals for this roadmap
 
