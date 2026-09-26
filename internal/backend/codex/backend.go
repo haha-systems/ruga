@@ -766,7 +766,8 @@ func statusSummary(method string, data, item map[string]any) string {
 		return "Reasoning summary updated"
 	}
 
-	return "Status updated"
+	// TODO: extract the operation name from the item or data if available, e.g. "plan", "reasoning", etc.
+	return "Status updated: " + method
 }
 
 func usageSummary(data map[string]any) string {
