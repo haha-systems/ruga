@@ -12,24 +12,30 @@ import (
 	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/harmonica"
 	"github.com/charmbracelet/lipgloss"
+
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/haha-systems/ruga/internal/event"
 	"github.com/haha-systems/ruga/internal/presentation"
 )
 
-type batchMsg []event.Event
-type streamClosedMsg struct{}
-type panelFrameMsg struct{ generation int }
-type activityFrameMsg struct{ generation int }
+type (
+	batchMsg         []event.Event
+	streamClosedMsg  struct{}
+	panelFrameMsg    struct{ generation int }
+	activityFrameMsg struct{ generation int }
+)
 
-type submitResultMsg struct{ err error }
-type approvalResultMsg struct {
-	requestID string
-	decision  event.ApprovalDecision
-	err       error
-}
+type (
+	submitResultMsg   struct{ err error }
+	approvalResultMsg struct {
+		requestID string
+		decision  event.ApprovalDecision
+		err       error
+	}
+)
 type interruptResultMsg struct{ err error }
 
 type Config struct {
@@ -150,6 +156,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.resize(msg.Width, msg.Height)
 		m.refreshViews(follow, followTelemetry)
+
 	case panelFrameMsg:
 		if msg.generation != m.panelGeneration || !m.panelAnimating {
 			return m, nil
@@ -176,6 +183,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.unseenTelemetry = 0
 		}
 		return m, nil
+
 	case activityFrameMsg:
 		if msg.generation != m.activityGeneration || !m.activityTicking || m.presentation.Activity.ActiveTools == 0 {
 			return m, nil
@@ -183,6 +191,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.activityFrame = (m.activityFrame + 1) % 4
 		m.refreshViews(false, false)
 		return m, nextActivityFrame(m.activityGeneration)
+
 	case batchMsg:
 		follow := !m.ready || m.viewport.AtBottom()
 		followTelemetry := m.telemetryFollowing && (!m.ready || m.telemetryViewport.AtBottom())
@@ -218,21 +227,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.activityGeneration++
 		}
 		return m, wait
+
 	case streamClosedMsg:
 		m.notice = "Replay complete"
 		return m, nil
+
 	case submitResultMsg:
 		if msg.err != nil {
 			m.status = "error"
 			m.turnActive = false
 		}
 		return m, nil
+
 	case approvalResultMsg:
 		if msg.err != nil {
 			delete(m.submitting, msg.requestID)
 			m.status = "error"
 		}
 		return m, nil
+
 	case interruptResultMsg:
 		m.interrupting = false
 		if msg.err != nil {
@@ -243,6 +256,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "idle"
 		}
 		return m, nil
+
 	case tea.KeyMsg:
 		return m.updateKey(msg)
 	}
@@ -477,12 +491,14 @@ func approvalDetail(request event.ApprovalRequest) string {
 			detail += " · actions: " + request.Details
 		}
 		return detail
+
 	case "file_change":
 		detail := "files: " + strings.Join(request.FilePaths, ", ")
 		if request.GrantRoot != "" {
 			detail += " · root: " + request.GrantRoot
 		}
 		return detail
+
 	case "mcp_tool":
 		return "tool: " + request.Tool + " · input: " + request.Details
 	case "permissions":
@@ -491,6 +507,7 @@ func approvalDetail(request event.ApprovalRequest) string {
 			detail += " · scope: " + request.Scope
 		}
 		return detail
+
 	default:
 		return "Review this action before it continues"
 	}
@@ -547,12 +564,14 @@ func (m *model) nextFocus() {
 		} else {
 			m.setFocus(focusComposer)
 		}
+
 	case focusTelemetry:
 		if len(m.approvals) > 0 {
 			m.setFocus(focusApproval)
 		} else {
 			m.setFocus(focusComposer)
 		}
+
 	default:
 		m.setFocus(focusComposer)
 	}
@@ -659,6 +678,7 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.interrupting = true
 		m.status = "interrupting"
 		return m, interruptTurn(m.ctx, m.actions.Interrupt)
+
 	case tea.KeyCtrlE:
 		m.showTelemetry = !m.showTelemetry
 		if !m.showTelemetry && m.focus == focusTelemetry {
@@ -681,6 +701,7 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.unseenTelemetry = 0
 		}
 		return m, nil
+
 	case tea.KeyTab:
 		if m.searchActive {
 			m.searchActive = false
@@ -694,6 +715,7 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.ensureSelectedVisible()
 		}
 		return m, nil
+
 	case tea.KeyEsc:
 		if m.searchActive {
 			m.search.SetValue("")
@@ -757,6 +779,7 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.search.Focus()
 				m.resizeIfReady()
 				return m, textinput.Blink
+
 			case "c":
 				copyText := m.copyConversation()
 				if m.focus == focusTelemetry {
@@ -775,20 +798,25 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			case tea.KeyUp:
 				m.moveTelemetrySelection(-1)
 				return m, nil
+
 			case tea.KeyDown:
 				m.moveTelemetrySelection(1)
 				return m, nil
+
 			case tea.KeyEnter:
 				m.toggleTelemetryExpansion()
 				return m, nil
+
 			case tea.KeyPgUp, tea.KeyPgDown:
 				m.telemetryFollowing = false
 			case tea.KeyHome:
 				m.selectTelemetryBoundary(false)
 				return m, nil
+
 			case tea.KeyEnd:
 				m.selectTelemetryBoundary(true)
 				return m, nil
+
 			case tea.KeyRunes:
 				if msg.String() == "g" || msg.String() == "G" {
 					m.selectTelemetryBoundary(msg.String() == "G")
@@ -813,6 +841,7 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.focus == focusTimeline {
 				m.setFocus(focusComposer)
 			}
+
 		case tea.KeyRunes:
 			if msg.String() == "g" {
 				targetViewport.GotoTop()
@@ -887,6 +916,7 @@ func (m *model) add(ev event.Event) {
 		if !m.readOnly && ev.Approval != nil {
 			m.setFocus(focusApproval)
 		}
+
 	case "approval.resolved":
 		if ev.Approval != nil {
 			m.removeApproval(ev.Approval.RequestID)
@@ -1261,6 +1291,7 @@ func batchEvents(ctx context.Context, input <-chan event.Event) <-chan []event.E
 					timer = time.NewTimer(40 * time.Millisecond)
 					timerC = timer.C
 				}
+
 			case <-timerC:
 				if !flush() {
 					return

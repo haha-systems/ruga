@@ -66,6 +66,7 @@ func TestRecorderStoresNormalizedEventsAndReplayPreservesOrder(t *testing.T) {
 			if string(gotJSON) != string(expectedJSON) {
 				t.Fatalf("event %d = %s, want %s", i, gotJSON, expectedJSON)
 			}
+
 		case <-ctx.Done():
 			t.Fatalf("waiting for event %d: %v", i, ctx.Err())
 		}

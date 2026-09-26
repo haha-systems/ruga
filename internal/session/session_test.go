@@ -24,7 +24,8 @@ func TestStoreRoundTripAndLatestByDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load(): %v", err)
 	}
-	if loaded.ID != first.ID || loaded.Backend != first.Backend || loaded.CWD != cwd || len(loaded.Messages) != 3 || loaded.Messages[1].ToolCalls[0].ID != "provider-id" || loaded.Messages[2].ToolCallID != "provider-id" {
+	if loaded.ID != first.ID || loaded.Backend != first.Backend || loaded.CWD != cwd || len(loaded.Messages) != 3 || loaded.Messages[1].ToolCalls[0].ID != "provider-id" ||
+		loaded.Messages[2].ToolCallID != "provider-id" {
 		t.Fatalf("loaded session = %+v", loaded)
 	}
 	info, err := os.Stat(store.path(first.ID))

@@ -7,8 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/haha-systems/ruga/internal/event"
 	codexgo "github.com/zealbase/codex-app-server-go"
+
+	"github.com/haha-systems/ruga/internal/event"
 )
 
 type approvalTestBus struct {
@@ -36,10 +37,14 @@ func TestApprovalRequestsWaitForApplicationDecision(t *testing.T) {
 		wantThread bool
 	}{
 		{
-			name: "command accepted", method: "item/commandExecution/requestApproval",
-			params:   `{"itemId":"it-1","threadId":"th-1","turnId":"tu-1","command":"rm -i cache.tmp","cwd":"/repo","reason":"outside workspace","commandActions":[{"type":"delete","path":"cache.tmp"}]}`,
-			decision: event.ApprovalAccept, wantKind: "command", wantPart: "rm -i cache.tmp",
-			wantJSON: `{"decision":"accept"}`, wantThread: true,
+			name:       "command accepted",
+			method:     "item/commandExecution/requestApproval",
+			params:     `{"itemId":"it-1","threadId":"th-1","turnId":"tu-1","command":"rm -i cache.tmp","cwd":"/repo","reason":"outside workspace","commandActions":[{"type":"delete","path":"cache.tmp"}]}`,
+			decision:   event.ApprovalAccept,
+			wantKind:   "command",
+			wantPart:   "rm -i cache.tmp",
+			wantJSON:   `{"decision":"accept"}`,
+			wantThread: true,
 		},
 		{
 			name: "command rejected", method: "item/commandExecution/requestApproval",
@@ -110,6 +115,7 @@ func TestApprovalRequestsWaitForApplicationDecision(t *testing.T) {
 				if string(result.value.Result) != tt.wantJSON {
 					t.Fatalf("result = %s, want %s", result.value.Result, tt.wantJSON)
 				}
+
 			case <-time.After(time.Second):
 				t.Fatal("server request did not finish after approval decision")
 			}
@@ -207,6 +213,7 @@ func TestInterruptTargetsActiveTurn(t *testing.T) {
 		if decision != event.ApprovalReject {
 			t.Fatalf("pending approval decision = %q, want reject", decision)
 		}
+
 	default:
 		t.Fatal("interrupt did not reject a pending approval")
 	}
@@ -232,6 +239,7 @@ func TestCanceledApprovalIsRemovedAndResolved(t *testing.T) {
 		if err == nil {
 			t.Fatal("canceled approval returned no error")
 		}
+
 	case <-time.After(time.Second):
 		t.Fatal("canceled approval handler did not return")
 	}

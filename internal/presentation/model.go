@@ -160,6 +160,7 @@ func (m *Model) Apply(ev event.Event) {
 	case "turn.started":
 		m.Activity.TurnStatus = "working"
 		m.operational(ev)
+
 	case "turn.completed":
 		m.Activity.TurnStatus = turnStatus(ev)
 		m.finishActive(ev.TurnID)
@@ -167,12 +168,15 @@ func (m *Model) Apply(ev event.Event) {
 		m.operational(ev)
 		clear(m.activeTelemetry)
 		clear(m.activeMessages)
+
 	case "error":
 		m.Activity.TurnStatus = "error"
 		m.operational(ev)
+
 	case "usage.updated":
 		m.Activity.Usage = ev.Summary
 		m.operational(ev)
+
 	default:
 		m.operational(ev)
 	}
@@ -420,6 +424,7 @@ func state(ev event.Event) (SemanticRole, string) {
 			return RoleWarning, "rejected"
 		}
 		return RoleSuccess, "accepted"
+
 	case "turn.completed":
 		if turnStatus(ev) == "interrupted" {
 			return RoleWarning, "interrupted"
@@ -428,11 +433,13 @@ func state(ev event.Event) (SemanticRole, string) {
 			return RoleFailure, "failed"
 		}
 		return RoleSuccess, "done"
+
 	case "tool.completed", "command.completed":
 		if failed(ev) {
 			return RoleFailure, "failed"
 		}
 		return RoleSuccess, "done"
+
 	default:
 		return RoleMuted, ""
 	}
@@ -450,6 +457,7 @@ func failed(ev event.Event) bool {
 		if exit != 0 {
 			return true
 		}
+
 	case float64:
 		if exit != 0 {
 			return true
@@ -466,20 +474,24 @@ func details(ev event.Event) []Detail {
 			stream = "stdout"
 		}
 		return []Detail{{Label: stream, Value: ev.Summary}}
+
 	case "tool.progress":
 		return []Detail{{Label: "progress", Value: ev.Summary}}
 	case "tool.started":
 		if args, ok := ev.Data["arguments"].(string); ok && args != "" {
 			return []Detail{{Label: "arguments", Value: args}}
 		}
+
 	case "tool.completed":
 		if result, ok := ev.Data["result"].(string); ok && result != "" {
 			return []Detail{{Label: "result", Value: result}}
 		}
+
 	case "command.completed":
 		if output, ok := ev.Data["output"].(string); ok && output != "" {
 			return []Detail{{Label: "stdout", Value: output}}
 		}
+
 	case "file.output":
 		if ev.Summary != "" {
 			return []Detail{{Label: "change", Value: ev.Summary}}

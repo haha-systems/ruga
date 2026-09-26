@@ -11,7 +11,8 @@ func TestExecBoundsOutputAndReportsExitStatus(t *testing.T) {
 	result := (Exec{Root: t.TempDir()}).Execute(context.Background(), mustJSON(map[string]any{
 		"command": command, "output_limit_bytes": 256,
 	}))
-	if !result.IsError || !strings.Contains(result.Content, "exit 7") || !strings.Contains(result.Content, "output bytes omitted") || !strings.Contains(result.Content, "HEAD") || !strings.Contains(result.Content, "TAIL") {
+	if !result.IsError || !strings.Contains(result.Content, "exit 7") || !strings.Contains(result.Content, "output bytes omitted") || !strings.Contains(result.Content, "HEAD") ||
+		!strings.Contains(result.Content, "TAIL") {
 		t.Fatalf("bounded command result = %+v", result)
 	}
 	if len(result.Content) > maxResultBytes {

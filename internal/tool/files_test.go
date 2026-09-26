@@ -26,7 +26,8 @@ func TestReadFileReturnsRequestedRangeAndBoundsDefault(t *testing.T) {
 		t.Fatalf("range result = %+v", result)
 	}
 	defaultResult := read.Execute(context.Background(), json.RawMessage(`{"path":"sample.txt"}`))
-	if defaultResult.IsError || !strings.Contains(defaultResult.Content, "line 200") || strings.Contains(defaultResult.Content, "line 201") || !strings.Contains(defaultResult.Content, "more lines available") {
+	if defaultResult.IsError || !strings.Contains(defaultResult.Content, "line 200") || strings.Contains(defaultResult.Content, "line 201") ||
+		!strings.Contains(defaultResult.Content, "more lines available") {
 		t.Fatalf("default result was not bounded: %+v", defaultResult)
 	}
 	outside := read.Execute(context.Background(), json.RawMessage(`{"path":"../outside"}`))
@@ -48,7 +49,8 @@ func TestSearchUsesRipgrepAndEnforcesMatchLimit(t *testing.T) {
 	}
 	search := Search{Root: root}
 	result := search.Execute(context.Background(), json.RawMessage(`{"query":"needle","path":"src","limit":1}`))
-	if result.IsError || !strings.Contains(result.Content, "src/a.go:1: needle one") || !strings.Contains(result.Content, "search results truncated") || strings.Contains(result.Content, "needle two") {
+	if result.IsError || !strings.Contains(result.Content, "src/a.go:1: needle one") || !strings.Contains(result.Content, "search results truncated") ||
+		strings.Contains(result.Content, "needle two") {
 		t.Fatalf("bounded search result = %+v", result)
 	}
 	contextResult := search.Execute(context.Background(), json.RawMessage(`{"query":"needle","path":"src/a.go","limit":2,"context":1}`))

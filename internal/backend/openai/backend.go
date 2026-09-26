@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/ThreeDotsLabs/watermill"
+
 	"github.com/haha-systems/ruga/internal/backend"
 	"github.com/haha-systems/ruga/internal/bus"
 	"github.com/haha-systems/ruga/internal/event"
@@ -22,8 +23,10 @@ import (
 	"github.com/haha-systems/ruga/internal/tool"
 )
 
-const defaultBaseURL = "https://api.openai.com/v1"
-const maxToolRounds = 16
+const (
+	defaultBaseURL = "https://api.openai.com/v1"
+	maxToolRounds  = 16
+)
 
 // Config contains connection settings for an OpenAI-compatible endpoint.
 type Config struct {
@@ -508,5 +511,7 @@ func publishTo(ctx context.Context, eventBus bus.Bus, ev event.Event) error {
 	return nil
 }
 
-var _ backend.Backend = (*Backend)(nil)
-var _ backend.ModelDisplay = (*Backend)(nil)
+var (
+	_ backend.Backend      = (*Backend)(nil)
+	_ backend.ModelDisplay = (*Backend)(nil)
+)

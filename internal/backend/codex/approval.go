@@ -5,8 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/haha-systems/ruga/internal/event"
 	codexgo "github.com/zealbase/codex-app-server-go"
+
+	"github.com/haha-systems/ruga/internal/event"
 )
 
 type serverRequestHandler struct {

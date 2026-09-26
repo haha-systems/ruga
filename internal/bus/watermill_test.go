@@ -33,6 +33,7 @@ func TestWatermillPreservesOrderWithoutBlockingPublisher(t *testing.T) {
 			if ev.ID != fmt.Sprint(i) {
 				t.Fatalf("event %d has ID %q", i, ev.ID)
 			}
+
 		case <-ctx.Done():
 			t.Fatalf("waiting for event %d: %v", i, ctx.Err())
 		}

@@ -12,10 +12,12 @@ import (
 	"unicode/utf8"
 
 	"github.com/ThreeDotsLabs/watermill"
+
+	codexgo "github.com/zealbase/codex-app-server-go"
+
 	"github.com/haha-systems/ruga/internal/bus"
 	"github.com/haha-systems/ruga/internal/event"
 	"github.com/haha-systems/ruga/internal/session"
-	codexgo "github.com/zealbase/codex-app-server-go"
 )
 
 type Backend struct {
@@ -409,6 +411,7 @@ func normalizeWithValue(method string, raw json.RawMessage, value any) event.Eve
 	case "command.started":
 		summary = commandSummary(item, false)
 		data["command"] = stringField(item, "command")
+
 	case "command.completed":
 		summary = commandSummary(item, true)
 		if exitCode, ok := numberField(item, "exitCode"); ok {
@@ -417,6 +420,7 @@ func normalizeWithValue(method string, raw json.RawMessage, value any) event.Eve
 		if output := stringField(item, "aggregatedOutput"); output != "" {
 			data["output"] = output
 		}
+
 	case "command.output":
 		summary = commandOutput(data)
 	case "file.changed":
@@ -426,12 +430,14 @@ func normalizeWithValue(method string, raw json.RawMessage, value any) event.Eve
 		if summary == "" {
 			summary = stringField(data, "delta")
 		}
+
 	case "tool.started", "tool.completed":
 		summary = toolSummary(item, kind == "tool.completed")
 		data["tool_name"] = toolSummary(item, false)
 		if success, ok := item["success"].(bool); ok {
 			data["error"] = !success
 		}
+
 	case "tool.progress":
 		summary = stringField(data, "message")
 	case "status.update":
@@ -548,6 +554,7 @@ func itemMethodKind(method, itemType string) string {
 			return "command.started"
 		}
 		return "command.completed"
+
 	case "fileChange":
 		return "file.changed"
 	case "mcpToolCall", "dynamicToolCall", "collabAgentToolCall", "subAgentActivity", "webSearch", "imageView", "imageGeneration":
@@ -555,6 +562,7 @@ func itemMethodKind(method, itemType string) string {
 			return "tool.started"
 		}
 		return "tool.completed"
+
 	case "reasoning", "plan":
 		return "status.update"
 	case "agentMessage":
@@ -562,6 +570,7 @@ func itemMethodKind(method, itemType string) string {
 			return "message.started"
 		}
 		return "message.completed"
+
 	default:
 		return methodKind(method)
 	}

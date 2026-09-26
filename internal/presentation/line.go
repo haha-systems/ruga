@@ -21,6 +21,7 @@ func (item *TelemetryItem) updateLine() {
 	case TelemetryCommand:
 		item.Glyph, item.Type = "$", "EXEC"
 		item.Primary = firstCommand(item.Events, item.Summary)
+
 	case TelemetryFile:
 		item.Glyph, item.Type = "Δ", "PATCH"
 	case TelemetryApproval:
@@ -34,6 +35,7 @@ func (item *TelemetryItem) updateLine() {
 	case TelemetryTurn:
 		item.Glyph, item.Type = "◈", "MODEL"
 		item.Primary = "Assistant turn"
+
 	case TelemetryUsage:
 		item.Glyph, item.Type = "◈", "USAGE"
 	case TelemetryOther:
@@ -64,6 +66,7 @@ func (item *TelemetryItem) toolLine() {
 			item.Primary += " · " + path
 		}
 		item.Detail = searchCount(result)
+
 	case "read":
 		item.Glyph = "↳"
 		item.Primary = argumentString(args, "path")
@@ -76,6 +79,7 @@ func (item *TelemetryItem) toolLine() {
 		} else {
 			item.Detail = fmt.Sprintf("L%d+", start)
 		}
+
 	case "list":
 		item.Glyph = "≡"
 		item.Primary = argumentString(args, "path")
@@ -83,20 +87,24 @@ func (item *TelemetryItem) toolLine() {
 			item.Primary = "."
 		}
 		item.Detail = resultCount(result, "entries")
+
 	case "patch":
 		item.Glyph = "Δ"
 		item.Primary = patchPath(argumentString(args, "patch"))
 		item.Detail = strings.TrimPrefix(result, "ok: ")
+
 	case "write":
 		item.Glyph = "+"
 		item.Primary = argumentString(args, "path")
 		if result != "" {
 			item.Detail = strings.TrimPrefix(result, "ok: ")
 		}
+
 	case "exec":
 		item.Glyph = "$"
 		item.Primary = argumentString(args, "command")
 		item.Detail = argumentString(args, "cwd")
+
 	default:
 		item.Glyph = "◇"
 		item.Primary = item.Summary
@@ -228,11 +236,13 @@ func displayStatus(item *TelemetryItem) string {
 			return "! " + strings.ToUpper(item.Status)
 		}
 		return "! ATTENTION"
+
 	case RoleSuccess:
 		if item.Type == "EXEC" {
 			return "✓ PASS"
 		}
 		return "✓ DONE"
+
 	default:
 		return ""
 	}

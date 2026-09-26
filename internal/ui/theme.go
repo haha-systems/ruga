@@ -2,6 +2,7 @@ package ui
 
 import (
 	"github.com/charmbracelet/lipgloss"
+
 	"github.com/haha-systems/ruga/internal/presentation"
 )
 

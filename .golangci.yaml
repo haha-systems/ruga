@@ -132,7 +132,6 @@ linters:
     - wastedassign
     - whitespace
     - wrapcheck
-    - wsl
     - wsl_v5
     - zerologlint
 
@@ -4564,9 +4563,9 @@ linters:
       # Max number of cuddled statements allowed above block statements, go, defer and send.
       # Every cuddled statement must have at least one variable used in the block.
       # Respects allow-first-in-block and allow-whole-block.
-      # With 0 no cuddling is allowed at all; every cuddle-checked trigger requires a blank line above it
+      # Require separation before each control-flow block.
       # Default: 1
-      cuddle-max-statements: 2
+      cuddle-max-statements: 0
 
       # Default checks to use.
       # Can be `all`, `none`, `default` or empty.
@@ -4797,7 +4796,7 @@ formatters:
     gofumpt:
       # Module path which contains the source code being formatted.
       # Default: ""
-      module-path: github.com/org/project
+      module-path: github.com/haha-systems/ruga
 
       # Extra formatting rules.
       extra:
@@ -4816,7 +4815,7 @@ formatters:
       # with the given prefixes are grouped after 3rd-party packages.
       # Default: []
       local-prefixes:
-        - github.com/org/project
+        - github.com/haha-systems/ruga
 
     golines:
       # Target maximum line length.
@@ -4878,15 +4877,15 @@ issues:
   # much better don't allow issues in new code.
   #
   # Default: false
-  new: true
+  new: false
 
   # Show only new issues created after the best common ancestor (merge-base against HEAD).
   # Default: ""
-  new-from-merge-base: main
+  new-from-merge-base: ""
 
   # Show only new issues created after git revision `REV`.
   # Default: ""
-  new-from-rev: HEAD
+  new-from-rev: ""
 
   # Show only new issues created in git patch with set file path.
   # Default: ""

@@ -10,5 +10,5 @@
 - Keep the TUI compact and responsive. Omit unavailable metadata, preserve unknown events, and avoid blocking backend event processing on rendering. The event inspector (live and replay) must not force-scroll away from manual navigation.
 - Prefer the existing Go, Bubble Tea, Bubbles, Lip Gloss, and Watermill patterns. Add a dependency only when it provides clear value over the existing stack.
 - Keep backends and command wiring testable by injecting environment lookups and other side effects rather than calling `os.Getenv` directly.
-- Format Go code with `gofmt`. Run `go test ./...` for code changes and add focused tests for changed behavior.
+- Go formatting is strict. Use `golangci-lint fmt` with the repository `.golangci.yaml`; do not use `gofmt` alone. Separate logical steps and control-flow blocks with blank lines, as in `cmd/ruga/main.go`; `wsl_v5` enforces this rule. Run `golangci-lint run` and `go test ./...` for code changes, and add focused tests for changed behavior.
 - This checkout uses Jujutsu, not a Git working tree. Use `jj status` and `jj diff` to inspect changes, and `jj commit -m "..."` to commit them.

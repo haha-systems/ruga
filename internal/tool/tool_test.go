@@ -36,6 +36,7 @@ func (t orderedTestTool) Name() string { return t.name }
 func (orderedTestTool) Schema() ToolSchema {
 	return ToolSchema{Type: "object", AdditionalProperties: false}
 }
+
 func (t orderedTestTool) Execute(context.Context, json.RawMessage) ToolResult {
 	t.started <- t.name
 	if t.first {
@@ -131,6 +132,7 @@ func (fixedResultTool) Name() string { return "fixed" }
 func (fixedResultTool) Schema() ToolSchema {
 	return ToolSchema{Type: "object", AdditionalProperties: false}
 }
+
 func (t fixedResultTool) Execute(context.Context, json.RawMessage) ToolResult {
 	return ToolResult{Content: t.content}
 }

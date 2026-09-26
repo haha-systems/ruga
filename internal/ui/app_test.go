@@ -10,8 +10,10 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/haha-systems/ruga/internal/bus"
 	"github.com/haha-systems/ruga/internal/event"
 	"github.com/haha-systems/ruga/internal/recording"
@@ -59,6 +61,7 @@ func TestReplayFixtureDrivesTimelineDeterministically(t *testing.T) {
 		case ev := <-events:
 			updated, _ := m.Update(batchMsg{ev})
 			m = updated.(model)
+
 		case <-ctx.Done():
 			t.Fatal("timed out waiting for replay fixture")
 		}
@@ -221,7 +224,8 @@ func TestFirstClassEventsRemainReadable(t *testing.T) {
 			t.Errorf("telemetry rendering %q does not contain %q", view, want)
 		}
 	}
-	if conversation := m.viewport.View(); !strings.Contains(conversation, "Checking the build") || strings.Contains(conversation, "internal/ui/app.go") || strings.Contains(conversation, "docs/search") {
+	if conversation := m.viewport.View(); !strings.Contains(conversation, "Checking the build") || strings.Contains(conversation, "internal/ui/app.go") ||
+		strings.Contains(conversation, "docs/search") {
 		t.Fatalf("conversation contains operational telemetry: %q", conversation)
 	}
 }

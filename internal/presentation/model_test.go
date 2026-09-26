@@ -64,8 +64,26 @@ func TestReducerCoalescesOperationalLifecycleAndKeepsCompleteData(t *testing.T) 
 
 func TestReducerClassifiesToolWithoutProviderSpecificTypes(t *testing.T) {
 	var model Model
-	model.Apply(event.Event{Backend: "openai", Kind: "tool.started", TurnID: "turn-1", ItemID: "call-1", Summary: "search", Data: map[string]any{"tool_name": "search", "arguments": `{"query":"ResumeThread"}`}})
-	model.Apply(event.Event{Backend: "openai", Kind: "tool.completed", TurnID: "turn-1", ItemID: "call-1", Summary: "search · succeeded", Data: map[string]any{"tool_name": "search", "result": "6 hits", "error": false}})
+	model.Apply(
+		event.Event{
+			Backend: "openai",
+			Kind:    "tool.started",
+			TurnID:  "turn-1",
+			ItemID:  "call-1",
+			Summary: "search",
+			Data:    map[string]any{"tool_name": "search", "arguments": `{"query":"ResumeThread"}`},
+		},
+	)
+	model.Apply(
+		event.Event{
+			Backend: "openai",
+			Kind:    "tool.completed",
+			TurnID:  "turn-1",
+			ItemID:  "call-1",
+			Summary: "search · succeeded",
+			Data:    map[string]any{"tool_name": "search", "result": "6 hits", "error": false},
+		},
+	)
 	if len(model.Telemetry) != 1 {
 		t.Fatalf("tool rows = %d, want 1", len(model.Telemetry))
 	}

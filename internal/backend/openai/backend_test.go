@@ -198,8 +198,14 @@ func TestBackendStreamsExecutesAndPersistsMultipleToolCalls(t *testing.T) {
 			if len(request.Tools) != 1 || request.Tools[0].Function.Name != "echo" {
 				t.Errorf("tool definitions = %+v, want echo", request.Tools)
 			}
-			_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-A\",\"type\":\"function\",\"function\":{\"name\":\"echo\",\"arguments\":\"{\\\"te\"}}]}}]}\n\n")
-			_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"call-B\",\"type\":\"function\",\"function\":{\"name\":\"echo\",\"arguments\":\"{\\\"text\\\":\\\"two\\\"}\"}},{\"index\":0,\"function\":{\"arguments\":\"xt\\\":\\\"one\\\"}\"}}]}}]}\n\n")
+			_, _ = fmt.Fprint(
+				w,
+				"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-A\",\"type\":\"function\",\"function\":{\"name\":\"echo\",\"arguments\":\"{\\\"te\"}}]}}]}\n\n",
+			)
+			_, _ = fmt.Fprint(
+				w,
+				"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"call-B\",\"type\":\"function\",\"function\":{\"name\":\"echo\",\"arguments\":\"{\\\"text\\\":\\\"two\\\"}\"}},{\"index\":0,\"function\":{\"arguments\":\"xt\\\":\\\"one\\\"}\"}}]}}]}\n\n",
+			)
 			_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 			return
 		}
@@ -254,7 +260,9 @@ func TestBackendStreamsExecutesAndPersistsMultipleToolCalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load saved session: %v", err)
 	}
-	if len(saved.Messages) != 5 || len(saved.Messages[1].ToolCalls) != 2 || saved.Messages[1].ToolCalls[0].ID != "call-A" || saved.Messages[2].ToolCallID != "call-A" || saved.Messages[3].ToolCallID != "call-B" || saved.Messages[4].Content != "done" {
+	if len(saved.Messages) != 5 || len(saved.Messages[1].ToolCalls) != 2 || saved.Messages[1].ToolCalls[0].ID != "call-A" || saved.Messages[2].ToolCallID != "call-A" ||
+		saved.Messages[3].ToolCallID != "call-B" ||
+		saved.Messages[4].Content != "done" {
 		t.Fatalf("persisted tool conversation = %+v", saved.Messages)
 	}
 	var toolEvents []event.Event
