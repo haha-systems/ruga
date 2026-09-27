@@ -544,6 +544,35 @@ func TestSearchKeepsVerticalInspectorVisible(t *testing.T) {
 	}
 }
 
+func TestCompactViewKeepsFocusedApprovalVisible(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		width         int
+		height        int
+		showInspector bool
+	}{
+		{name: "approval height", width: 100, height: 12},
+		{name: "narrow inspector", width: 50, height: 10, showInspector: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			m := interactiveTestModel()
+			m.focus = focusApproval
+			m.showTelemetry = test.showInspector
+			m.approvals = []event.ApprovalRequest{{RequestID: "approval-1", Kind: "command", Command: "echo ok"}}
+			m.resize(test.width, test.height)
+
+			view := m.View()
+			if got := lipgloss.Height(view); got > test.height {
+				t.Fatalf("rendered height = %d, terminal height = %d", got, test.height)
+			}
+
+			if !strings.Contains(view, "APPROVAL REQUIRED") {
+				t.Fatalf("focused approval is missing from compact view: %q", view)
+			}
+		})
+	}
+}
+
 func TestFocusChangePreservesViewportPosition(t *testing.T) {
 	m := interactiveTestModel()
 	m.panelPlacement = PanelRight

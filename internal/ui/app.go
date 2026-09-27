@@ -306,10 +306,6 @@ func (m model) View() string {
 		return "Starting Codex App Server…"
 	}
 
-	if m.height < 12 {
-		return m.compactView()
-	}
-
 	header := m.headerLine()
 	footer := m.style(presentation.RoleMuted).Render(fitLine(m.footerKeys(), max(1, m.width)))
 	if m.notice != "" {
@@ -327,7 +323,12 @@ func (m model) View() string {
 		renderPanel(m.activeTheme(), m.input.View(), m.width, m.focus == focusComposer),
 		footer,
 	)
-	return m.activeTheme().Canvas.Width(m.width).Height(m.height).Render(strings.Join(parts, "\n"))
+	view := m.activeTheme().Canvas.Width(m.width).Height(m.height).Render(strings.Join(parts, "\n"))
+	if lipgloss.Height(view) > m.height {
+		return m.compactView()
+	}
+
+	return view
 }
 
 func (m model) compactView() string {
@@ -339,18 +340,18 @@ func (m model) compactView() string {
 	}
 
 	body := m.viewport.View()
-	if m.width < 70 && m.showTelemetry {
-		body = m.compactInspector()
-	} else {
-		switch m.focus {
-		case focusTelemetry:
-			body = m.compactInspector()
+	switch m.focus {
+	case focusApproval:
+		if len(m.approvals) > 0 {
+			request := m.approvals[0]
+			body = fitLine("⚠ APPROVAL REQUIRED · "+approvalDetail(request), m.width)
+		}
 
-		case focusApproval:
-			if len(m.approvals) > 0 {
-				request := m.approvals[0]
-				body = fitLine("⚠ APPROVAL REQUIRED · "+approvalDetail(request), m.width)
-			}
+	case focusTelemetry:
+		body = m.compactInspector()
+	default:
+		if m.width < 70 && m.showTelemetry {
+			body = m.compactInspector()
 		}
 	}
 
