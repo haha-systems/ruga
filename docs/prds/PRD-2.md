@@ -378,18 +378,23 @@ is still one turn.
 
 ### Strategy
 
-Start with a sliding window plus synthesis:
+Use a sliding window plus synthesis, with a selectable summary:
 
 * Keep the most recent N turns verbatim.
 * When the estimate crosses a threshold, replace the oldest turns with a single
   synthetic `system` message that summarises them.
-* The summary is deterministic and mechanical by default, so compaction is
-  testable offline and resumable. A single low-cost completion may produce a
-  better summary later; that is an optimisation, not a prerequisite.
+* Two strategies are available and selected by configuration:
+  * **Deterministic** (default): a mechanical summary built from the dropped
+    messages. It is offline, resumable, and testable without a model.
+  * **Model**: a single non-streaming completion is asked to summarise the
+    dropped turns for continuation. It gives better summaries at the cost of one
+    extra round trip and tighter coupling to the model.
 
-Model-driven compaction — asking the model to summarise for continuation near
-the limit — is a later option. It gives better summaries at the cost of an extra
-round trip and tighter coupling to the model.
+The model strategy is best-effort. Any failure — a transport error, no content,
+or a non-2xx response — falls back to the deterministic summary, so compaction
+never blocks or fails a turn. Either way the chosen summary folds in any prior
+summary and stays bounded, and the `context.compacted` event records which
+strategy produced it.
 
 ### Stable prefix
 

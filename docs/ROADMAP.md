@@ -101,19 +101,21 @@ How it works:
   results are kept together, so a result is never orphaned from the call it
   answers. Cutting across a turn cannot happen.
 - **Strategy.** The most recent turns are kept verbatim; older turns are
-  replaced by one deterministic `system` summary that folds in any prior
-  summary. A leading summary is preserved as a prefix rather than counted as a
-  turn, so a conversation that stays over the threshold does not re-compact
-  every round.
+  replaced by one `system` summary that folds in any prior summary. A leading
+  summary is preserved as a prefix rather than counted as a turn, so a
+  conversation that stays over the threshold does not re-compact every round.
+  The summary is deterministic by default; `-compaction model` asks the model to
+  summarise for continuation, falling back to the deterministic summary on any
+  failure so compaction never blocks a turn.
 - **Durability.** `session.Session` gains `Summary` and `CompactedAt`, and both
   persisted and in-memory history are rewritten together, so a resume keeps the
   compacted form instead of re-inflating the transcript.
 - **Events.** `context.compacted` flows through presentation and recording like
   every other event.
 
-Still deferred: **model-driven compaction**, which asks the model to summarise
-for continuation near the limit. It gives better summaries at the cost of an
-extra round trip; the deterministic summary is the shipped default.
+Both strategies are implemented; the deterministic one remains the default
+because it needs no extra round trip. The `context.compacted` event records
+which strategy produced a given summary.
 
 Because CES (§5) isolates each phase in a fresh context, this and §5 remain two
 parts of one context-management story and should be designed together.
