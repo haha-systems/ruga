@@ -558,7 +558,15 @@ func TestCompactViewKeepsFocusedApprovalVisible(t *testing.T) {
 			m := interactiveTestModel()
 			m.focus = focusApproval
 			m.showTelemetry = test.showInspector
-			m.approvals = []event.ApprovalRequest{{RequestID: "approval-1", Kind: "command", Command: "echo ok"}}
+			command := "echo ok"
+			reason := "review this command first"
+			if test.name == "approval height" {
+				command = strings.Repeat("long-command ", 12) + "COMMAND_END"
+			}
+
+			m.approvals = []event.ApprovalRequest{{
+				RequestID: "approval-1", Kind: "command", Command: command, Reason: reason,
+			}}
 			m.resize(test.width, test.height)
 
 			view := m.View()
@@ -568,6 +576,14 @@ func TestCompactViewKeepsFocusedApprovalVisible(t *testing.T) {
 
 			if !strings.Contains(view, "APPROVAL REQUIRED") {
 				t.Fatalf("focused approval is missing from compact view: %q", view)
+			}
+
+			if test.name == "approval height" && (!strings.Contains(view, "COMMAND_END") || !strings.Contains(view, reason)) {
+				t.Fatalf("compact approval lost command or reason: %q", view)
+			}
+
+			if test.name == "approval height" && (!strings.Contains(view, ">") || !strings.Contains(view, "ctrl+c quit")) {
+				t.Fatalf("compact approval hid the composer or help: %q", view)
 			}
 		})
 	}

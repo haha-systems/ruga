@@ -339,12 +339,12 @@ func (m model) compactView() string {
 		footer = m.style(presentation.RoleMuted).Render(fitLine(m.notice+"  ·  "+m.footerKeys(), m.width))
 	}
 
+	bodyRows := max(0, m.height-3)
 	body := m.viewport.View()
 	switch m.focus {
 	case focusApproval:
 		if len(m.approvals) > 0 {
-			request := m.approvals[0]
-			body = fitLine("⚠ APPROVAL REQUIRED · "+approvalDetail(request), m.width)
+			body = strings.Join(m.compactApprovalLines(m.approvals[0], bodyRows), "\n")
 		}
 
 	case focusTelemetry:
@@ -355,7 +355,6 @@ func (m model) compactView() string {
 		}
 	}
 
-	bodyRows := max(0, m.height-3)
 	lines := strings.Split(body, "\n")
 	if len(lines) > bodyRows {
 		lines = lines[:bodyRows]
@@ -375,6 +374,23 @@ func (m model) compactInspector() string {
 
 	parts = append(parts, m.telemetryViewport.View())
 	return strings.Join(parts, "\n")
+}
+
+func (m model) compactApprovalLines(request event.ApprovalRequest, maxRows int) []string {
+	header := fmt.Sprintf("⚠ APPROVAL REQUIRED [%d/%d] · %s", 1, len(m.approvals), strings.ToUpper(strings.ReplaceAll(request.Kind, "_", " ")))
+	lines := []string{fitLine(header, m.width)}
+	lines = append(lines, wrapLine("details: "+approvalDetail(request), m.width)...)
+	reason := request.Reason
+	if reason == "" {
+		reason = "No reason supplied"
+	}
+
+	lines = append(lines, wrapLine("reason: "+reason, m.width)...)
+	if len(lines) > maxRows {
+		lines = lines[:maxRows]
+	}
+
+	return lines
 }
 
 func (m model) viewPanels() string {
