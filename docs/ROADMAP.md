@@ -25,7 +25,7 @@ records the *why* and the seams, while the PRDs hold the contracts.
 | Quota stats in the top line | Design | §14 |
 | Parallel tool calls | Implemented | this document, §1 |
 | Usage accounting (OpenAI-compatible) | Implemented | this document, §2 |
-| Context compaction for OpenAI-compatible | Design | §2 |
+| Context compaction for OpenAI-compatible | Implemented | §2 |
 | Memory via Ghostdive adapter | Design (blocked on context pressure) | §3 |
 | Quota-aware cognition (QAC) | Design (blocked on CES) | §4 |
 | Cumulative Epistemic State (CES) | Design (largest change) | §5, `CES.md` |
@@ -84,82 +84,39 @@ decision through App Server.
 
 ---
 
-## 2. Context compaction for the OpenAI-compatible path
+## 2. Context compaction for the OpenAI-compatible path — implemented
 
-### Intent
+A long session now stays inside the model window by reducing history in
+`Submit` when the conversation crosses a threshold, implemented in
+`internal/backend/openai/compact.go` and specified by PRD-2 §9.
 
-Keep a long session inside the model's context window without losing the thread
-of the work.
+How it works:
 
-### What already exists
+- **Trigger.** Estimated tokens (the `(bytes+3)/4` idiom) and reported input
+  tokens are compared against three quarters of the configured window. The
+  estimate is the fallback when a server reports no `usage`; either signal can
+  trigger. The `-context-limit` flag sets the window, with a conservative
+  default for models that do not declare one.
+- **Unit.** The turn is atomic: an assistant message, its tool calls, and their
+  results are kept together, so a result is never orphaned from the call it
+  answers. Cutting across a turn cannot happen.
+- **Strategy.** The most recent turns are kept verbatim; older turns are
+  replaced by one deterministic `system` summary that folds in any prior
+  summary. A leading summary is preserved as a prefix rather than counted as a
+  turn, so a conversation that stays over the threshold does not re-compact
+  every round.
+- **Durability.** `session.Session` gains `Summary` and `CompactedAt`, and both
+  persisted and in-memory history are rewritten together, so a resume keeps the
+  compacted form instead of re-inflating the transcript.
+- **Events.** `context.compacted` flows through presentation and recording like
+  every other event.
 
-- Per tool result bounding: `tool.bound` caps each result at 16 KiB with an
-  explicit truncation marker, matching PRD-2 §6.
-- `turn.completed` reports `tool_result_bytes` and an estimated token count.
-- **Usage accounting (done).** The OpenAI backend requests
-  `stream_options.include_usage`, captures the `usage` block from the final
-  chunk, and publishes a normalized `usage.updated` event (input/output/total
-  tokens), deriving the total when a server omits it. `internal/presentation`
-  already reduces that event and renders it in the top line, so the trigger
-  signal now exists on the OpenAI path.
+Still deferred: **model-driven compaction**, which asks the model to summarise
+for continuation near the limit. It gives better summaries at the cost of an
+extra round trip; the deterministic summary is the shipped default.
 
-### Gaps
-
-There is **no aggregate context management**. `Submit` replays the full history
-every round trip and it grows monotonically for the life of the session. Growth
-is bounded per call but unbounded per session; eventually the endpoint rejects
-the request on context length.
-
-1. **No session field for a summary.** `session.Session` has messages but no
-   summary or compaction timestamp, so a compaction cannot survive resume.
-2. **Persisted state and in-memory history are separate.** `persistMessages`
-   writes to the store while `b.history` is derived; compaction must rewrite
-   both or resume re-inflates.
-
-Usage telemetry, once the blocker, is now in place (see above).
-
-### The hard part: tool-call pairing
-
-Compaction cannot be naive truncation. Every OpenAI `tool` message must follow
-the assistant message carrying its matching `tool_calls` id; dropping the
-assistant message orphans the results and most servers reject them. The
-compaction unit must be the **turn** — an assistant message plus its calls and
-results travel together, or the whole group is replaced by a summary.
-
-### Approaches
-
-- **A. Sliding window + synthesis (preferred first).** Keep the most recent N
-  turns verbatim; when the estimate crosses a threshold, replace the oldest
-  turns with one synthetic `system` message. The summary may be mechanical or a
-  single extra low-cost completion. Deterministic, resumable, testable offline.
-- **B. Model-driven compaction.** Near the limit, ask the model to summarise for
-  continuation and splice the reply in as the new prefix. Better summaries; an
-  extra round trip; requires token accounting first.
-
-### Seams
-
-- Capture `usage` in the stream parser and publish `usage.updated`. *(done)*
-- Trigger inside `Submit`'s loop; store the reduced form on `session.Session`.
-- Publish a `context.compacted` event so it flows through presentation and
-  recording like every other event.
-
-### Constraints
-
-- Not all compatible servers return `usage`; keep a character-based estimator
-  (`(bytes+3)/4` idiom) as a fallback trigger.
-- The context limit differs per model; make the threshold configurable with a
-  conservative default.
-- Providers with prompt caching reward a stable prefix; compact rarely and in
-  large steps rather than trimming every turn.
-- PRD-2 now covers window management in §9 (Context Management): accounting,
-  the turn-as-unit rule, the sliding-window strategy, the stable-prefix
-  constraint, and the state/resume requirements. Design is settled; §2 is ready
-  to implement against that contract.
-
-### Trigger
-
-Unblocked: usage accounting has landed and PRD-2 §9 specifies the design. The
-`usage.updated` signal is shared with §4 and §14.
+Because CES (§5) isolates each phase in a fresh context, this and §5 remain two
+parts of one context-management story and should be designed together.
 
 ---
 
@@ -651,7 +608,7 @@ providers as their normalized usage becomes available.
 ## Dependency summary
 
 ```text
-usage accounting (done) ──▶ context compaction (§2)
+usage accounting (done) ──▶ context compaction (§2) (done)
         │
         └───────────────▶ QAC budgets (§4)
 
@@ -678,15 +635,16 @@ approval modes (§12) ──▶ approval focus behavior (§13)
 usage accounting (done) ──▶ quota stats in top line (§14)
 ```
 
-Done so far: **§1** (parallel tool calls), **§7** (markdown rendering), and
-**usage accounting** for the OpenAI-compatible path.
+Done so far: **§1** (parallel tool calls), **§2** (context compaction),
+**§7** (markdown rendering), and **usage accounting** for the OpenAI-compatible
+path.
 
-Suggested order for what remains: **§2** → **§5** → **§4** → **§3** prefix
-layer. The tool-level memory slice of §3 can land at any time. The interface
-track (§6–§11, §13–§14) can run in parallel with or between the cognition work;
-§8 (which builds on the `MarkdownStyle` seam §7 added) is
-next there, followed by **§6**, **§9**, **§11**, then **§14** once usage data is
-available. Approval work (§12–§13) and the configuration file (§10) are
+Suggested order for what remains: **§5** → **§4** → **§3** prefix layer. The
+tool-level memory slice of §3 can land at any time. The interface track
+(§6–§11, §13–§14) can run in parallel with or between the cognition work; §8
+(which builds on the `MarkdownStyle` seam §7 added) is next there, followed by
+**§6**, **§9**, **§11**, then **§14** once usage data is available. Approval
+work (§12–§13) and the configuration file (§10) are
 cross-cutting and need their contracts settled before implementation. None of
 these block the cognition stack.
 
