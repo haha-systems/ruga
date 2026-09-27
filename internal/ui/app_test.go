@@ -379,19 +379,23 @@ func TestPanelPlacementControlsPaneGeometry(t *testing.T) {
 			m.resize(100, 20)
 			m.viewport.SetContent("conversation sentinel")
 			m.telemetryViewport.SetContent("event stream sentinel")
+			conversationInsetsH, conversationInsetsV := panelInsets(m.focus == focusTimeline)
+			inspectorInsetsH, inspectorInsetsV := panelInsets(m.focus == focusTelemetry)
 
 			if placement.vertical() {
-				if m.viewport.Width != 100 || m.telemetryViewport.Width != 100 {
+				if m.viewport.Width != 100-conversationInsetsH || m.telemetryViewport.Width != 100-inspectorInsetsH {
 					t.Fatalf("vertical pane widths = %d, %d", m.viewport.Width, m.telemetryViewport.Width)
 				}
 
-				if m.telemetryViewport.Height != m.panelHeight || m.viewport.Height+m.telemetryViewport.Height+1 != 16 {
-					t.Fatalf("vertical pane heights = %d, %d with panel height %d", m.viewport.Height, m.telemetryViewport.Height, m.panelHeight)
+				telemetryOuter := m.telemetryViewport.Height + 1 + inspectorInsetsV
+				conversationOuter := m.viewport.Height + 1 + conversationInsetsV
+				if telemetryOuter != m.panelHeight || conversationOuter+telemetryOuter+1 != 10 {
+					t.Fatalf("vertical pane outer heights = %d, %d with panel height %d", conversationOuter, telemetryOuter, m.panelHeight)
 				}
 			} else {
-				conversation, inspector := m.viewWidths()
-				if m.viewport.Width != conversation || m.telemetryViewport.Width != inspector ||
-					m.viewport.Height != m.telemetryViewport.Height {
+				conversationOuter, inspectorOuter := m.viewWidths()
+				if m.viewport.Width != conversationOuter-conversationInsetsH || m.telemetryViewport.Width != inspectorOuter-inspectorInsetsH ||
+					m.viewport.Height != 10-1-conversationInsetsV || m.telemetryViewport.Height != 10-1-inspectorInsetsV {
 
 					t.Fatalf("horizontal pane geometry = %dx%d and %dx%d", m.viewport.Width, m.viewport.Height, m.telemetryViewport.Width, m.telemetryViewport.Height)
 				}
@@ -425,6 +429,187 @@ func TestPanelPlacementControlsPaneGeometry(t *testing.T) {
 				t.Fatalf("conversation body should precede inspector for %s placement: %q", placement, body)
 			}
 		})
+	}
+}
+
+func TestResizeAccountsForPanelInsets(t *testing.T) {
+	widths, heights := []int{18, 50, 70, 100}, []int{4, 10, 20}
+	placements := []PanelPlacement{PanelRight, PanelLeft, PanelBottom, PanelTop}
+	focuses := []focusTarget{focusTimeline, focusTelemetry, focusComposer, focusApproval}
+
+	for _, width := range widths {
+		for _, height := range heights {
+			for _, placement := range placements {
+				for _, focus := range focuses {
+					for _, searchActive := range []bool{false, true} {
+						name := fmt.Sprintf("%dx%d/%s/focus-%d/search-%t", width, height, placement, focus, searchActive)
+						t.Run(name, func(t *testing.T) {
+							m := interactiveTestModel()
+							m.panelPlacement = placement
+							m.showTelemetry = true
+							m.focus = focus
+							m.approvals = []event.ApprovalRequest{{RequestID: "approval-1", Kind: "command", Command: "echo ok"}}
+							m.search = textinput.New()
+							m.search.Prompt = "/ "
+							m.searchActive = searchActive
+							m.input.SetValue("composer-visible")
+							m.resize(width, height)
+
+							conversationOuter, inspectorOuter := width, width
+							if width >= 70 && !placement.vertical() {
+								conversationOuter, inspectorOuter = m.viewWidths()
+							}
+
+							conversationInsets, _ := panelInsets(focus == focusTimeline)
+							inspectorInsets, _ := panelInsets(focus == focusTelemetry)
+							if want := max(1, conversationOuter-conversationInsets); m.viewport.Width != want {
+								t.Fatalf("conversation width = %d, want %d", m.viewport.Width, want)
+							}
+
+							if want := max(1, inspectorOuter-inspectorInsets); m.telemetryViewport.Width != want {
+								t.Fatalf("inspector width = %d, want %d", m.telemetryViewport.Width, want)
+							}
+
+							if m.viewport.Height < 1 || m.telemetryViewport.Height < 1 || m.input.Width < 1 || m.search.Width < 1 {
+								t.Fatalf(
+									"invalid content dimensions: conversation=%dx%d inspector=%dx%d input=%d search=%d",
+									m.viewport.Width,
+									m.viewport.Height,
+									m.telemetryViewport.Width,
+									m.telemetryViewport.Height,
+									m.input.Width,
+									m.search.Width,
+								)
+							}
+
+							for _, line := range strings.Split(m.View(), "\n") {
+								if got := lipgloss.Width(line); got > width {
+									t.Fatalf("rendered line width = %d, terminal width = %d: %q", got, width, line)
+								}
+							}
+
+							if width == 100 && height == 20 && focus == focusComposer && !searchActive {
+								view := m.View()
+								if got := lipgloss.Height(view); got > height {
+									t.Fatalf("rendered height = %d, terminal height = %d", got, height)
+								}
+
+								if !strings.Contains(view, "composer-visible") || !strings.Contains(view, "ctrl+c quit") {
+									t.Fatal("composer or help line is missing from the rendered view")
+								}
+							}
+						})
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestFocusChangePreservesViewportPosition(t *testing.T) {
+	m := interactiveTestModel()
+	m.panelPlacement = PanelRight
+	m.showTelemetry = true
+	m.setPanelSize(m.desiredPanelSize())
+	m.resize(100, 20)
+	for index := range 100 {
+		m.add(event.Event{Kind: "user.message", Summary: fmt.Sprintf("conversation row %d", index)})
+		m.add(event.Event{Kind: "tool.started", ItemID: fmt.Sprintf("tool-%d", index), Summary: fmt.Sprintf("event row %d", index)})
+	}
+
+	m.refreshViews(true, true)
+	m.viewport.SetYOffset(3)
+	m.telemetryViewport.SetYOffset(4)
+
+	m.setFocus(focusTimeline)
+	conversationOuter, _ := m.viewWidths()
+	conversationInsets, _ := panelInsets(true)
+	if want := max(1, conversationOuter-conversationInsets); m.viewport.Width != want {
+		t.Fatalf("conversation width after focus = %d, want %d", m.viewport.Width, want)
+	}
+
+	if m.viewport.YOffset != 3 || m.telemetryViewport.YOffset != 4 {
+		t.Fatalf("manual offsets changed after focus: %d, %d", m.viewport.YOffset, m.telemetryViewport.YOffset)
+	}
+
+	m.viewport.GotoBottom()
+	m.telemetryViewport.GotoBottom()
+	m.telemetryFollowing = true
+	m.setFocus(focusTelemetry)
+	if !m.viewport.AtBottom() || !m.telemetryViewport.AtBottom() {
+		t.Fatal("viewports left the bottom after focus changed their dimensions")
+	}
+}
+
+func TestPanelAnimationFitsContainer(t *testing.T) {
+	for _, placement := range []PanelPlacement{PanelRight, PanelLeft, PanelBottom, PanelTop} {
+		t.Run(string(placement), func(t *testing.T) {
+			m := interactiveTestModel()
+			m.panelPlacement = placement
+			m.resize(100, 20)
+			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
+			m = updated.(model)
+
+			for frame := 0; frame < 40 && m.panelAnimating; frame++ {
+				updated, _ = m.Update(panelFrameMsg{generation: m.panelGeneration})
+				m = updated.(model)
+				assertViewFitsTerminal(t, m)
+			}
+
+			updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
+			m = updated.(model)
+			for frame := 0; frame < 40 && m.panelAnimating; frame++ {
+				updated, _ = m.Update(panelFrameMsg{generation: m.panelGeneration})
+				m = updated.(model)
+				assertViewFitsTerminal(t, m)
+			}
+		})
+	}
+}
+
+func TestLongContentStaysInsidePanel(t *testing.T) {
+	m := interactiveTestModel()
+	m.panelPlacement = PanelRight
+	m.showTelemetry = true
+	m.setPanelSize(m.desiredPanelSize())
+	m.resize(100, 20)
+	m.add(event.Event{Kind: "assistant.message", Summary: strings.Repeat("assistant text ", 40)})
+	m.add(event.Event{Kind: "command.started", ItemID: "command-1", Summary: "go test ./..."})
+	m.add(event.Event{Kind: "command.output", ItemID: "command-1", Summary: strings.Repeat("output ", 1300)})
+	m.expandedTelemetry = map[int]bool{1: true}
+	m.setFocus(focusTelemetry)
+	m.refreshViews(false, false)
+
+	view := m.View()
+	for _, line := range strings.Split(view, "\n") {
+		if width := lipgloss.Width(line); width > m.width {
+			t.Fatalf("rendered line width %d exceeds terminal width %d", width, m.width)
+		}
+	}
+
+	expanded := strings.Join(m.expandedTelemetryLines(m.presentation.Telemetry[1], m.telemetryViewport.Width), "\n")
+	if !strings.Contains(expanded, "bytes omitted") {
+		t.Fatal("expanded command output lost the existing truncation marker")
+	}
+
+	for _, line := range strings.Split(expanded, "\n") {
+		if width := lipgloss.Width(line); width > m.telemetryViewport.Width {
+			t.Fatalf("expanded line width %d exceeds inspector width %d", width, m.telemetryViewport.Width)
+		}
+	}
+}
+
+func assertViewFitsTerminal(t *testing.T, m model) {
+	t.Helper()
+	view := m.View()
+	if height := lipgloss.Height(view); height > m.height {
+		t.Fatalf("view height %d exceeds terminal height %d", height, m.height)
+	}
+
+	for _, line := range strings.Split(view, "\n") {
+		if width := lipgloss.Width(line); width > m.width {
+			t.Fatalf("view line width %d exceeds terminal width %d: %q", width, m.width, line)
+		}
 	}
 }
 
@@ -622,7 +807,7 @@ func TestUnseenTelemetryWaitsForExplicitFollow(t *testing.T) {
 func TestTelemetrySelectionExpandsInlineAndRevealsTruncatedText(t *testing.T) {
 	m := interactiveTestModel()
 	m.showTelemetry = true
-	m.resize(65, 18)
+	m.resize(65, 24)
 	query := strings.Repeat("ResumeThread", 6)
 	m.add(event.Event{Kind: "tool.started", ItemID: "search-1", Summary: "search", Data: map[string]any{"tool_name": "search", "arguments": fmt.Sprintf(`{"query":%q}`, query)}})
 	m.add(event.Event{Kind: "tool.completed", ItemID: "search-1", Summary: "search · succeeded", Data: map[string]any{"tool_name": "search", "result": "6 hits"}})
@@ -674,7 +859,7 @@ func TestTelemetrySelectionExpandsInlineAndRevealsTruncatedText(t *testing.T) {
 func TestExpandedCommandOutputIsBoundedOnlyForDisplay(t *testing.T) {
 	m := interactiveTestModel()
 	m.showTelemetry = true
-	m.resize(70, 12)
+	m.resize(70, 20)
 	full := strings.Repeat("long output line\n", 700)
 	m.add(event.Event{Kind: "command.started", ItemID: "cmd-1", Summary: "go test ./...", Data: map[string]any{"command": "go test ./..."}})
 	m.add(event.Event{Kind: "command.output", ItemID: "cmd-1", Summary: full, Data: map[string]any{"stream": "stderr"}})

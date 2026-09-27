@@ -500,28 +500,47 @@ func (m *model) resize(width, height int) {
 		m.panelPosition = float64(m.desiredPanelSize())
 	}
 
-	m.input.Width = max(1, width-lipgloss.Width(m.input.Prompt)-2)
-	m.search.Width = max(1, width-lipgloss.Width(m.search.Prompt)-2)
-	panelHeight := 0
-	if panel := m.approvalPanel(); panel != "" {
-		panelHeight = lipgloss.Height(panel) + 1
+	inputInsets, _ := panelInsets(m.focus == focusComposer)
+	m.input.Width = max(1, m.width-inputInsets-lipgloss.Width(m.input.Prompt))
+	inspectorOuterWidth := m.width
+	if m.width >= 70 && m.panelWidth > 0 {
+		_, inspectorOuterWidth = m.viewWidths()
 	}
 
-	chromeHeight := 4 // header, view heading, composer, footer
-	if m.searchActive || m.search.Value() != "" {
-		chromeHeight++
-	}
+	searchInsets, _ := panelInsets(m.focus == focusTelemetry)
+	m.search.Width = max(1, inspectorOuterWidth-searchInsets-lipgloss.Width(m.search.Prompt))
 
-	viewportHeight := max(1, height-chromeHeight-panelHeight)
+	mainHeight := m.mainRegionHeight()
 	conversationWidth, telemetryWidth := m.width, m.width
 	if m.panelWidth > 0 && m.width >= 70 {
 		conversationWidth, telemetryWidth = m.viewWidths()
 	}
 
-	conversationHeight, telemetryHeight := viewportHeight, viewportHeight
+	conversationInsetsH, conversationInsetsV := panelInsets(m.focus == focusTimeline)
+	telemetryInsetsH, telemetryInsetsV := panelInsets(m.focus == focusTelemetry)
+	conversationWidth = max(1, conversationWidth-conversationInsetsH)
+	telemetryWidth = max(1, telemetryWidth-telemetryInsetsH)
+	searchRows := 0
+	if m.searchActive || m.search.Value() != "" {
+		searchRows = 1
+	}
+
+	conversationHeight := max(1, mainHeight-1-conversationInsetsV)
+	telemetryHeight := max(1, mainHeight-1-searchRows-telemetryInsetsV)
 	if m.panelHeight > 0 && m.width >= 70 {
-		telemetryHeight = min(m.panelHeight, max(1, viewportHeight-2))
-		conversationHeight = max(1, viewportHeight-telemetryHeight-1)
+		inspectorMinHeight := 1 + telemetryInsetsV + searchRows + 1
+		conversationMinHeight := 1 + conversationInsetsV + 1
+		maxPanelHeight := max(0, mainHeight-1-conversationMinHeight)
+		if m.panelHeight < inspectorMinHeight {
+			m.panelHeight = 0
+		} else {
+			m.panelHeight = min(m.panelHeight, maxPanelHeight)
+		}
+
+		if m.panelHeight > 0 {
+			telemetryHeight = max(1, m.panelHeight-1-telemetryInsetsV-searchRows)
+			conversationHeight = max(1, mainHeight-m.panelHeight-1-1-conversationInsetsV)
+		}
 	}
 
 	if !m.ready {
@@ -535,6 +554,20 @@ func (m *model) resize(width, height int) {
 	m.viewport.Height = conversationHeight
 	m.telemetryViewport.Width = telemetryWidth
 	m.telemetryViewport.Height = telemetryHeight
+}
+
+func (m model) mainRegionHeight() int {
+	_, composerInsetsV := panelInsets(m.focus == focusComposer)
+	composerHeight := lipgloss.Height(m.input.View()) + composerInsetsV
+	headerHeight, footerHeight := 1, 1
+	gapCount := 3
+	approvalHeight := 0
+	if panel := m.approvalPanel(); panel != "" {
+		approvalHeight = lipgloss.Height(panel)
+		gapCount++
+	}
+
+	return max(1, m.height-headerHeight-footerHeight-composerHeight-approvalHeight-gapCount)
 }
 
 func (m model) footerKeys() string {
@@ -748,6 +781,10 @@ func (m *model) setFocus(target focusTarget) {
 		target = focusComposer
 	}
 
+	followConversation := !m.ready || m.viewport.AtBottom()
+	followTelemetry := m.telemetryFollowing && (!m.ready || m.telemetryViewport.AtBottom())
+	conversationOffset, telemetryOffset := m.viewport.YOffset, m.telemetryViewport.YOffset
+
 	m.focus = target
 	if target == focusTelemetry {
 		m.ensureTelemetrySelection()
@@ -757,6 +794,18 @@ func (m *model) setFocus(target focusTarget) {
 		m.input.Focus()
 	} else {
 		m.input.Blur()
+	}
+
+	if m.ready {
+		m.resize(m.width, m.height)
+		m.refreshViews(followConversation, followTelemetry)
+		if !followConversation {
+			m.viewport.SetYOffset(conversationOffset)
+		}
+
+		if !followTelemetry {
+			m.telemetryViewport.SetYOffset(telemetryOffset)
+		}
 	}
 }
 
@@ -881,7 +930,7 @@ func (m *model) ensureSelectedVisible() {
 		return
 	}
 
-	if rows[0] < m.telemetryViewport.YOffset || rows[0] >= m.telemetryViewport.YOffset+m.telemetryViewport.Height {
+	if m.expandedTelemetry[m.selectedTelemetry] || rows[0] < m.telemetryViewport.YOffset || rows[0] >= m.telemetryViewport.YOffset+m.telemetryViewport.Height {
 		m.telemetryViewport.SetYOffset(rows[0])
 	}
 }
