@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -25,6 +27,8 @@ type Backend struct {
 	cwd                string
 	mu                 sync.Mutex
 	client             *codexgo.Client
+	process            *codexProcess
+	stderrLog          *os.File
 	thread             *codexgo.SessionThread
 	threadID           string
 	modelName          string
@@ -47,13 +51,38 @@ func (b *Backend) Start(ctx context.Context, eventBus bus.Bus) error {
 		return fmt.Errorf("find Codex CLI %q: %w", b.binary, err)
 	}
 
+	stderrLog, err := openCodexStderrLog()
+	if err != nil {
+		return fmt.Errorf("open Codex stderr log: %w", err)
+	}
+
+	process, err := startCodexProcess(context.Background(), path, []string{"app-server", "--stdio"}, b.cwd, &boundedLogWriter{writer: stderrLog})
+	if err != nil {
+		_ = stderrLog.Close()
+		return fmt.Errorf("start Codex App Server: %w", err)
+	}
+
 	client, err := codexgo.New(
-		codexgo.WithStdioProcess(path, "app-server", "--stdio"),
-		codexgo.WithProcessDir(b.cwd),
+		codexgo.WithStdioTransport(process.stdout, process.stdin),
 		codexgo.WithRequestHandler(serverRequestHandler{backend: b}),
 	)
 	if err != nil {
+		_ = process.Close()
+		_ = stderrLog.Close()
 		return fmt.Errorf("connect to Codex App Server: %w", err)
+	}
+
+	initializeCtx, cancelInitialize := context.WithTimeout(ctx, 30*time.Second)
+	_, err = client.Initialize(initializeCtx, codexgo.InitializeRequest{
+		ClientInfo:   codexgo.ClientInfo{Name: "codex-go-sdk", Version: "0.1.0"},
+		Capabilities: codexgo.Capabilities{ExperimentalAPI: true},
+	})
+	cancelInitialize()
+	if err != nil {
+		_ = client.Close()
+		_ = process.Close()
+		_ = stderrLog.Close()
+		return fmt.Errorf("initialize Codex App Server: %w", err)
 	}
 
 	// Model metadata is useful for the status line but is not required to use
@@ -72,7 +101,7 @@ func (b *Backend) Start(ctx context.Context, eventBus bus.Bus) error {
 
 	sub := client.Events()
 	b.mu.Lock()
-	b.client, b.sub, b.eventBus = client, sub, eventBus
+	b.client, b.process, b.stderrLog, b.sub, b.eventBus = client, process, stderrLog, sub, eventBus
 	b.mu.Unlock()
 
 	if err := eventBus.Publish(ctx, event.Event{
@@ -406,13 +435,23 @@ func (b *Backend) Close() error {
 	}
 
 	b.threadID, b.turnID = "", ""
+	var closeErr error
 	if b.client != nil {
-		err := b.client.Close()
+		closeErr = errors.Join(closeErr, b.client.Close())
 		b.client = nil
-		return err
 	}
 
-	return nil
+	if b.process != nil {
+		closeErr = errors.Join(closeErr, b.process.Close())
+		b.process = nil
+	}
+
+	if b.stderrLog != nil {
+		closeErr = errors.Join(closeErr, b.stderrLog.Close())
+		b.stderrLog = nil
+	}
+
+	return closeErr
 }
 
 func normalize(method string, raw json.RawMessage) event.Event {
