@@ -64,6 +64,21 @@ func TestValidatePanelOption(t *testing.T) {
 	}
 }
 
+func TestValidateCompactionOption(t *testing.T) {
+	options := backendOptions{}
+	if err := setCompactionOption(&options, "model"); err != nil {
+		t.Errorf("setCompactionOption(model): %v", err)
+	}
+
+	if options.compaction != "model" {
+		t.Fatalf("compaction option = %q, want model", options.compaction)
+	}
+
+	if err := setCompactionOption(&options, "magic"); err == nil {
+		t.Fatal("setCompactionOption(magic) error = nil, want invalid strategy error")
+	}
+}
+
 func TestResolveSessionSelectsAndLoadsSessions(t *testing.T) {
 	store := session.NewStore(t.TempDir())
 	cwd := filepath.Join(t.TempDir(), "repo")

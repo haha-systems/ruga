@@ -49,6 +49,19 @@ type toolFunctionSchema struct {
 	Parameters  tool.ToolSchema `json:"parameters"`
 }
 
+// completionResponse is the non-streaming Chat Completions shape, used for the
+// best-effort summarisation request that drives model compaction.
+type completionResponse struct {
+	Choices []struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	} `json:"choices"`
+	Error *struct {
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
 type completionChunk struct {
 	Model   string `json:"model"`
 	Choices []struct {

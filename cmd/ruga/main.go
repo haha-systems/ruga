@@ -58,6 +58,9 @@ func main() {
 	flags.StringVar(&options.openAIModel, "openai-model", "gpt-5.4-mini", "model for the OpenAI-compatible backend")
 	flags.StringVar(&options.openAIKeyEnv, "openai-api-key-env", "OPENAI_API_KEY", "environment variable containing the OpenAI-compatible API key")
 	flags.IntVar(&options.contextLimit, "context-limit", 0, "model context window in tokens for compaction (0 uses the conservative default)")
+	flags.Func("compaction", "summarisation strategy near the context limit: deterministic or model", func(value string) error {
+		return setCompactionOption(&options, value)
+	})
 	flags.Func("panel", "event stream placement: right, left, bottom, or top", func(value string) error {
 		return setPanelOption(&options, value)
 	})
@@ -110,6 +113,16 @@ func setPanelOption(options *backendOptions, value string) error {
 	return nil
 }
 
+func setCompactionOption(options *backendOptions, value string) error {
+	switch openaibackend.CompactionStrategy(value) {
+	case openaibackend.CompactionDeterministic, openaibackend.CompactionModel:
+		options.compaction = value
+		return nil
+	}
+
+	return fmt.Errorf("invalid compaction strategy %q (choose deterministic or model)", value)
+}
+
 type backendOptions struct {
 	name             string
 	panel            string
@@ -118,6 +131,7 @@ type backendOptions struct {
 	openAIModel      string
 	openAIKeyEnv     string
 	contextLimit     int
+	compaction       string
 	resumeLatest     bool
 	resumeID         string
 	openAIBaseURLSet bool
@@ -331,6 +345,7 @@ func newBackend(options backendOptions, workingDir string, lookupEnv func(string
 			APIKey:       lookupEnv(options.openAIKeyEnv),
 			APIKeyEnv:    options.openAIKeyEnv,
 			ContextLimit: options.contextLimit,
+			Compaction:   openaibackend.CompactionStrategy(options.compaction),
 		}), nil
 
 	default:

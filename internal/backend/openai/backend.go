@@ -34,6 +34,20 @@ const parallelToolInstruction = "You may request several tool calls in one respo
 	"Issue independent tool calls together instead of one per turn; " +
 	"only serialize calls when a later call depends on an earlier result."
 
+// CompactionStrategy selects how older turns are summarised when the
+// conversation approaches the context window.
+type CompactionStrategy string
+
+const (
+	// CompactionDeterministic builds a summary mechanically from dropped
+	// messages. It is offline, resumable, and the default.
+	CompactionDeterministic CompactionStrategy = "deterministic"
+	// CompactionModel asks the model to summarise dropped messages for
+	// continuation, falling back to the deterministic summary if the request
+	// fails. It costs one extra round trip.
+	CompactionModel CompactionStrategy = "model"
+)
+
 // Config contains connection settings for an OpenAI-compatible endpoint.
 type Config struct {
 	BaseURL   string
@@ -44,6 +58,10 @@ type Config struct {
 	// ContextLimit is the model's context window in tokens. A conservative
 	// default is used when it is zero or negative.
 	ContextLimit int
+
+	// Compaction selects the summarisation strategy. Empty means
+	// CompactionDeterministic.
+	Compaction CompactionStrategy
 }
 
 // Backend keeps protocol details local to this adapter and publishes only
@@ -54,6 +72,7 @@ type Backend struct {
 	apiKey       string
 	apiKeyEnv    string
 	contextLimit int
+	compaction   CompactionStrategy
 	client       *http.Client
 
 	mu       sync.Mutex
@@ -73,12 +92,18 @@ func New(config Config) *Backend {
 		baseURL = defaultBaseURL
 	}
 
+	compaction := config.Compaction
+	if compaction == "" {
+		compaction = CompactionDeterministic
+	}
+
 	return &Backend{
 		baseURL:      baseURL,
 		model:        strings.TrimSpace(config.Model),
 		apiKey:       config.APIKey,
 		apiKeyEnv:    config.APIKeyEnv,
 		contextLimit: config.ContextLimit,
+		compaction:   compaction,
 		client:       http.DefaultClient,
 	}
 }

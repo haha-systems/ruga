@@ -343,6 +343,183 @@ func TestBackendCompactsContextAndSurvivesResume(t *testing.T) {
 	}
 }
 
+func TestModelCompactionUsesModelSummary(t *testing.T) {
+	var requests []completionRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request completionRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+
+		requests = append(requests, request)
+		if request.Stream {
+			w.Header().Set("Content-Type", "text/event-stream")
+			chunk, _ := json.Marshal(map[string]any{
+				"choices": []any{map[string]any{"delta": map[string]string{"content": "ok"}}},
+				"usage":   map[string]any{"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+			})
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", chunk)
+			_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+			return
+		}
+
+		// The summariser request is non-streaming.
+		if len(request.Messages) != 2 || request.Messages[0].Role != "system" || request.Messages[1].Role != "user" {
+			t.Errorf("summariser messages = %+v", request.Messages)
+		}
+
+		if request.Messages[1].Content == "" {
+			t.Errorf("summariser transcript is empty")
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"choices":[{"message":{"content":"User asked to compact the transcript."}}]}`)
+	}))
+	defer server.Close()
+	store := session.NewStore(t.TempDir())
+	state := session.New("openai", "/repo")
+	state.Model = "test-model"
+	padding := strings.Repeat("x", 200)
+	for i := 0; i < 5; i++ {
+		state.Messages = append(state.Messages,
+			session.Message{Role: "user", Content: fmt.Sprintf("request %d %s", i, padding)},
+			session.Message{Role: "assistant", Content: fmt.Sprintf("answer %d %s", i, padding)},
+		)
+	}
+
+	client := New(Config{BaseURL: server.URL + "/v1", Model: "test-model", ContextLimit: 400, Compaction: CompactionModel})
+	client.ConfigureSession(state, false, store.Save)
+	events := &captureBus{}
+	if err := client.Start(context.Background(), events); err != nil {
+		t.Fatalf("Start(): %v", err)
+	}
+
+	if err := client.Submit(context.Background(), "next"); err != nil {
+		t.Fatalf("Submit(): %v", err)
+	}
+
+	_ = client.Close()
+
+	// The first request must be the non-streaming summariser, followed by the
+	// streamed turn that carries the model-produced summary.
+	if len(requests) < 2 || requests[0].Stream {
+		t.Fatalf("first request was not the summariser: %+v", requests)
+	}
+
+	var streamedReq *completionRequest
+	for i := range requests {
+		if requests[i].Stream {
+			streamedReq = &requests[i]
+			break
+		}
+	}
+
+	if streamedReq == nil {
+		t.Fatalf("no streamed request followed compaction: %+v", requests)
+	}
+
+	if streamedReq.Messages[0].Role != "system" || !strings.Contains(streamedReq.Messages[0].Content, "User asked to compact the transcript.") {
+		t.Fatalf("model summary was not used as the prefix: %+v", streamedReq.Messages[0])
+	}
+
+	var strategy string
+	for _, ev := range events.snapshot() {
+		if ev.Kind == "context.compacted" {
+			strategy, _ = ev.Data["strategy"].(string)
+		}
+	}
+
+	if strategy != string(CompactionModel) {
+		t.Fatalf("context.compacted strategy = %q, want %q", strategy, CompactionModel)
+	}
+}
+
+func TestModelCompactionFallsBackWhenSummariserFails(t *testing.T) {
+	var summariserCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request completionRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+
+		if !request.Stream {
+			summariserCalls++
+			http.Error(w, `{"error":"summariser unavailable"}`, http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		chunk, _ := json.Marshal(map[string]any{
+			"choices": []any{map[string]any{"delta": map[string]string{"content": "ok"}}},
+			"usage":   map[string]any{"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+		})
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", chunk)
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+	store := session.NewStore(t.TempDir())
+	state := session.New("openai", "/repo")
+	state.Model = "test-model"
+	padding := strings.Repeat("x", 200)
+	for i := 0; i < 5; i++ {
+		state.Messages = append(state.Messages,
+			session.Message{Role: "user", Content: fmt.Sprintf("request %d %s", i, padding)},
+			session.Message{Role: "assistant", Content: fmt.Sprintf("answer %d %s", i, padding)},
+		)
+	}
+
+	client := New(Config{BaseURL: server.URL + "/v1", Model: "test-model", ContextLimit: 400, Compaction: CompactionModel})
+	client.ConfigureSession(state, false, store.Save)
+	events := &captureBus{}
+	if err := client.Start(context.Background(), events); err != nil {
+		t.Fatalf("Start(): %v", err)
+	}
+
+	if err := client.Submit(context.Background(), "next"); err != nil {
+		t.Fatalf("Submit() failed despite fallback: %v", err)
+	}
+
+	_ = client.Close()
+	if summariserCalls == 0 {
+		t.Fatalf("summariser was never attempted")
+	}
+
+	var compacted bool
+	var strategy string
+	for _, ev := range events.snapshot() {
+		if ev.Kind == "context.compacted" {
+			compacted = true
+			strategy, _ = ev.Data["strategy"].(string)
+		}
+
+		if ev.Kind == "error" {
+			t.Fatalf("summariser failure surfaced as a turn error: %+v", ev)
+		}
+	}
+
+	if !compacted {
+		t.Fatalf("compaction did not fall back: %+v", events.snapshot())
+	}
+
+	if strategy != string(CompactionDeterministic) {
+		t.Fatalf("fallback strategy = %q, want %q", strategy, CompactionDeterministic)
+	}
+}
+
+func TestDeterministicCompactionDefaultUnchanged(t *testing.T) {
+	reduced, summary, dropped := compactMessages([]session.Message{
+		{Role: "user", Content: "one"},
+		{Role: "assistant", Content: "a"},
+		{Role: "user", Content: "two"},
+		{Role: "assistant", Content: "b"},
+		{Role: "user", Content: "three"},
+		{Role: "assistant", Content: "c"},
+	}, 1, maxSummaryBytes)
+	if dropped != 4 || !strings.Contains(summary, compactionMarker) || !strings.Contains(reduced[0].Content, "one") {
+		t.Fatalf("deterministic compaction = summary %q dropped %d", summary, dropped)
+	}
+}
+
 func TestBackendPublishesHTTPFailure(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, `{"error":"invalid model"}`, http.StatusBadRequest)

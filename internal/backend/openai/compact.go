@@ -56,20 +56,47 @@ func (b *Backend) maybeCompact(ctx context.Context, eventBus bus.Bus, threadID, 
 		return history, false, nil
 	}
 
-	reduced, summary, dropped := compactMessages(history, defaultKeepTurns, maxSummaryBytes)
-	if dropped == 0 {
+	plan := planCompaction(history, defaultKeepTurns)
+	if plan.empty() {
 		return history, false, nil
 	}
 
+	summary, strategy := b.buildSummary(ctx, plan)
+
+	reduced := plan.assemble(summary)
 	if err := b.replaceMessages(reduced); err != nil {
 		return history, false, err
 	}
 
-	if err := publishCompacted(ctx, eventBus, threadID, turnID, dropped, defaultKeepTurns, summary); err != nil {
+	if err := publishCompacted(ctx, eventBus, threadID, turnID, len(plan.dropped), defaultKeepTurns, summary, strategy); err != nil {
 		return history, false, err
 	}
 
 	return reduced, true, nil
+}
+
+// buildSummary produces the compaction summary with the configured strategy,
+// falling back to the deterministic summary when the model summariser fails.
+// The returned strategy reflects which path actually produced the summary.
+func (b *Backend) buildSummary(ctx context.Context, plan compactionPlan) (string, CompactionStrategy) {
+	if b.compactionValue() == CompactionModel {
+		summary, err := b.modelSummary(ctx, plan.priorSummary, plan.dropped, maxSummaryBytes)
+		if err == nil {
+			return summary, CompactionModel
+		}
+	}
+
+	return summarize(plan.dropped, plan.priorSummary, maxSummaryBytes), CompactionDeterministic
+}
+
+func (b *Backend) compactionValue() CompactionStrategy {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.compaction == "" {
+		return CompactionDeterministic
+	}
+
+	return b.compaction
 }
 
 // estimatedTokens approximates the conversation size with the (bytes+3)/4 idiom
@@ -87,11 +114,21 @@ func estimatedTokens(history []session.Message) int {
 	return (bytes + 3) / 4
 }
 
-// compactMessages keeps the most recent keepTurns turns verbatim and replaces
-// everything older with one synthetic system summary. Turns are atomic: an
-// assistant message, its tool calls, and their results stay together, so a
-// result is never orphaned from the call it answers.
-func compactMessages(history []session.Message, keepTurns, maxBytes int) ([]session.Message, string, int) {
+// compactionPlan is the split of a conversation into the turns to drop and the
+// turns to keep, with any prior summary preserved as a prefix.
+type compactionPlan struct {
+	priorSummary string
+	dropped      []session.Message
+	kept         []session.Message
+}
+
+func (plan compactionPlan) empty() bool { return len(plan.dropped) == 0 }
+
+// planCompaction selects the most recent keepTurns turns to keep verbatim and
+// everything older to drop. Turns are atomic: an assistant message, its tool
+// calls, and their results stay together, so a result is never orphaned from
+// the call it answers.
+func planCompaction(history []session.Message, keepTurns int) compactionPlan {
 	priorSummary := ""
 	body := history
 	if summary, ok := leadingSummary(history); ok {
@@ -105,19 +142,38 @@ func compactMessages(history []session.Message, keepTurns, maxBytes int) ([]sess
 	}
 
 	if len(turns) <= keepTurns {
-		return history, "", 0
+		return compactionPlan{}
 	}
 
 	dropCount := len(turns) - keepTurns
-	dropped := flattenTurns(turns[:dropCount])
-	kept := flattenTurns(turns[dropCount:])
-	summary := summarize(dropped, priorSummary, maxBytes)
+	return compactionPlan{
+		priorSummary: priorSummary,
+		dropped:      flattenTurns(turns[:dropCount]),
+		kept:         flattenTurns(turns[dropCount:]),
+	}
+}
 
-	reduced := make([]session.Message, 0, len(kept)+1)
+// assemble rebuilds the history around a chosen summary: the summary as a
+// system prefix followed by the kept turns.
+func (plan compactionPlan) assemble(summary string) []session.Message {
+	reduced := make([]session.Message, 0, len(plan.kept)+1)
 	reduced = append(reduced, session.Message{Role: "system", Content: summary})
-	reduced = append(reduced, kept...)
+	reduced = append(reduced, plan.kept...)
 
-	return reduced, summary, len(dropped)
+	return reduced
+}
+
+// compactMessages keeps the most recent keepTurns turns verbatim and replaces
+// everything older with one deterministic system summary.
+func compactMessages(history []session.Message, keepTurns, maxBytes int) ([]session.Message, string, int) {
+	plan := planCompaction(history, keepTurns)
+	if plan.empty() {
+		return history, "", 0
+	}
+
+	summary := summarize(plan.dropped, plan.priorSummary, maxBytes)
+
+	return plan.assemble(summary), summary, len(plan.dropped)
 }
 
 // leadingSummary returns the content of a prior compaction summary, which is
@@ -235,7 +291,7 @@ func truncateUTF8(value string, maxBytes int) string {
 	return trimmed
 }
 
-func publishCompacted(ctx context.Context, eventBus bus.Bus, threadID, turnID string, droppedMessages, keptTurns int, summary string) error {
+func publishCompacted(ctx context.Context, eventBus bus.Bus, threadID, turnID string, droppedMessages, keptTurns int, summary string, strategy CompactionStrategy) error {
 	return publishTo(ctx, eventBus, event.Event{
 		Backend: "openai", Kind: "context.compacted", ThreadID: threadID, TurnID: turnID,
 		Source:  "openai.compaction",
@@ -244,6 +300,7 @@ func publishCompacted(ctx context.Context, eventBus bus.Bus, threadID, turnID st
 			"dropped_messages": droppedMessages,
 			"kept_turns":       keptTurns,
 			"summary_bytes":    len(summary),
+			"strategy":         string(strategy),
 		},
 	})
 }
