@@ -313,16 +313,71 @@ func (m model) View() string {
 	}
 
 	parts := []string{header}
-	if m.searchActive || m.search.Value() != "" {
-		parts = append(parts, m.search.View())
-	}
 
 	if panel := m.approvalPanel(); panel != "" {
 		parts = append(parts, panel)
 	}
 
-	parts = append(parts, m.viewHeading(), m.viewBody(), m.input.View(), footer)
+	parts = append(parts,
+		m.viewPanels(),
+		renderPanel(m.activeTheme(), m.input.View(), m.width, m.focus == focusComposer),
+		footer,
+	)
 	return m.activeTheme().Canvas.Width(m.width).Height(m.height).Render(strings.Join(parts, "\n"))
+}
+
+func (m model) viewPanels() string {
+	if !m.panelVisible() {
+		return m.conversationRegion(m.width)
+	}
+
+	if m.width < 70 {
+		return m.inspectorRegion(m.width)
+	}
+
+	conversationWidth, inspectorWidth := m.width, m.width
+	if m.panelWidth > 0 {
+		conversationWidth, inspectorWidth = m.viewWidths()
+	}
+
+	conversation := m.conversationRegion(conversationWidth)
+	inspector := m.inspectorRegion(inspectorWidth)
+	if m.panelPlacement.vertical() {
+		if m.panelPlacement == PanelTop {
+			conversation, inspector = inspector, conversation
+		}
+
+		return lipgloss.JoinVertical(lipgloss.Left, conversation, "", inspector)
+	}
+
+	gapHeight := max(lipgloss.Height(conversation), lipgloss.Height(inspector))
+	gap := strings.TrimSuffix(strings.Repeat(" \n", gapHeight), "\n")
+	if m.panelPlacement == PanelLeft {
+		conversation, inspector = inspector, conversation
+	}
+
+	return lipgloss.JoinHorizontal(lipgloss.Top, conversation, gap, inspector)
+}
+
+func (m model) conversationRegion(width int) string {
+	focused := m.focus == focusTimeline
+	horizontal, _ := panelInsets(focused)
+	heading := m.style(presentation.RoleMuted).Render(fitLine("CONVERSATION", max(1, width-horizontal)))
+	content := lipgloss.JoinVertical(lipgloss.Left, heading, m.viewport.View())
+	return renderPanel(m.activeTheme(), content, width, focused)
+}
+
+func (m model) inspectorRegion(width int) string {
+	focused := m.focus == focusTelemetry
+	horizontal, _ := panelInsets(focused)
+	innerWidth := max(1, width-horizontal)
+	parts := []string{m.style(presentation.RoleMuted).Render(fitLine(m.inspectorHeading(), innerWidth))}
+	if m.searchActive || m.search.Value() != "" {
+		parts = append(parts, m.search.View())
+	}
+
+	parts = append(parts, m.telemetryViewport.View())
+	return renderPanel(m.activeTheme(), strings.Join(parts, "\n"), width, focused)
 }
 
 func (m model) viewHeading() string {
@@ -566,9 +621,11 @@ func (m model) approvalPanel() string {
 		return ""
 	}
 
+	focused := m.focus == focusApproval
+	horizontal, _ := panelInsets(focused)
+	width := max(1, m.width-horizontal)
+	lineWidth := width
 	request := m.approvals[0]
-	width := max(1, m.width-4)
-	lineWidth := max(1, width-2)
 	header := fmt.Sprintf("⚠ APPROVAL REQUIRED [%d/%d] · %s", 1, len(m.approvals), strings.ToUpper(strings.ReplaceAll(request.Kind, "_", " ")))
 	detail := approvalDetail(request)
 	reason := request.Reason
@@ -585,7 +642,7 @@ func (m model) approvalPanel() string {
 	lines = append(lines, wrapLine("details: "+detail, lineWidth)...)
 	lines = append(lines, wrapLine("reason: "+reason, lineWidth)...)
 	lines = append(lines, fitLine(keys, lineWidth))
-	return m.activeTheme().ApprovalPanel.Width(width).Render(strings.Join(lines, "\n"))
+	return renderPanel(m.activeTheme(), strings.Join(lines, "\n"), m.width, focused)
 }
 
 func wrapLine(value string, width int) []string {

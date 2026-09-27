@@ -428,6 +428,67 @@ func TestPanelPlacementControlsPaneGeometry(t *testing.T) {
 	}
 }
 
+func TestViewFocusedRegionBorder(t *testing.T) {
+	tests := []struct {
+		name   string
+		focus  focusTarget
+		marker string
+	}{
+		{name: "conversation", focus: focusTimeline, marker: "CONVERSATION"},
+		{name: "inspector", focus: focusTelemetry, marker: "EVENT STREAM"},
+		{name: "composer", focus: focusComposer, marker: "Message Codex"},
+		{name: "approval", focus: focusApproval, marker: "APPROVAL REQUIRED"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			m := interactiveTestModel()
+			if test.focus == focusTelemetry {
+				m.showTelemetry = true
+				m.setPanelSize(m.desiredPanelSize())
+			}
+
+			if test.focus == focusApproval {
+				m.approvals = []event.ApprovalRequest{{RequestID: "approval-1", Kind: "command", Command: "echo ok"}}
+			}
+
+			if test.focus == focusComposer {
+				m.input.SetValue("composer sentinel")
+				test.marker = "composer sentinel"
+			}
+
+			m.setFocus(test.focus)
+			assertOnlyFocusedPanelContains(t, m.View(), test.marker)
+		})
+	}
+}
+
+func TestViewApprovalFocusBorderFallsBackToComposer(t *testing.T) {
+	m := interactiveTestModel()
+	m.input.SetValue("composer sentinel")
+	m.setFocus(focusApproval)
+	view := m.View()
+	if strings.Contains(view, "APPROVAL REQUIRED") {
+		t.Fatal("view shows an approval region without a pending approval")
+	}
+
+	assertOnlyFocusedPanelContains(t, view, "composer sentinel")
+}
+
+func assertOnlyFocusedPanelContains(t *testing.T, view, marker string) {
+	t.Helper()
+	top := strings.Index(view, "╭")
+	bottom := strings.Index(view, "╰")
+	if strings.Count(view, "╭") != 1 || strings.Count(view, "╰") != 1 || top < 0 || bottom < top {
+		t.Fatalf("view does not contain exactly one focused panel border: %q", view)
+	}
+
+	content := strings.Index(view, marker)
+	if content < top || content > bottom {
+		t.Fatalf("focused panel does not contain %q: %q", marker, view)
+	}
+}
+
 func TestSmallTerminalKeepsEveryRenderedLineWithinWidth(t *testing.T) {
 	m := interactiveTestModel()
 	m.resize(25, 8)
