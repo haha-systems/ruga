@@ -306,6 +306,10 @@ func (m model) View() string {
 		return "Starting Codex App Server…"
 	}
 
+	if m.height < 12 {
+		return m.compactView()
+	}
+
 	header := m.headerLine()
 	footer := m.style(presentation.RoleMuted).Render(fitLine(m.footerKeys(), max(1, m.width)))
 	if m.notice != "" {
@@ -324,6 +328,52 @@ func (m model) View() string {
 		footer,
 	)
 	return m.activeTheme().Canvas.Width(m.width).Height(m.height).Render(strings.Join(parts, "\n"))
+}
+
+func (m model) compactView() string {
+	header := m.headerLine()
+	footer := m.style(presentation.RoleMuted).Render(fitLine(m.footerKeys(), m.width))
+	input := m.input.View()
+	if m.notice != "" {
+		footer = m.style(presentation.RoleMuted).Render(fitLine(m.notice+"  ·  "+m.footerKeys(), m.width))
+	}
+
+	body := m.viewport.View()
+	if m.width < 70 && m.showTelemetry {
+		body = m.compactInspector()
+	} else {
+		switch m.focus {
+		case focusTelemetry:
+			body = m.compactInspector()
+
+		case focusApproval:
+			if len(m.approvals) > 0 {
+				request := m.approvals[0]
+				body = fitLine("⚠ APPROVAL REQUIRED · "+approvalDetail(request), m.width)
+			}
+		}
+	}
+
+	bodyRows := max(0, m.height-3)
+	lines := strings.Split(body, "\n")
+	if len(lines) > bodyRows {
+		lines = lines[:bodyRows]
+	}
+
+	parts := []string{header}
+	parts = append(parts, lines...)
+	parts = append(parts, input, footer)
+	return m.activeTheme().Canvas.Width(m.width).Height(m.height).Render(strings.Join(parts, "\n"))
+}
+
+func (m model) compactInspector() string {
+	parts := []string{m.style(presentation.RoleMuted).Render(fitLine(m.inspectorHeading(), m.width))}
+	if m.searchActive || m.search.Value() != "" {
+		parts = append(parts, m.search.View())
+	}
+
+	parts = append(parts, m.telemetryViewport.View())
+	return strings.Join(parts, "\n")
 }
 
 func (m model) viewPanels() string {
@@ -531,10 +581,13 @@ func (m *model) resize(width, height int) {
 		inspectorMinHeight := 1 + telemetryInsetsV + searchRows + 1
 		conversationMinHeight := 1 + conversationInsetsV + 1
 		maxPanelHeight := max(0, mainHeight-1-conversationMinHeight)
-		if m.panelHeight < inspectorMinHeight {
+		if maxPanelHeight < inspectorMinHeight {
 			m.panelHeight = 0
 		} else {
-			m.panelHeight = min(m.panelHeight, maxPanelHeight)
+			m.panelHeight = min(max(m.panelHeight, inspectorMinHeight), maxPanelHeight)
+			if !m.panelAnimating {
+				m.panelPosition = float64(m.panelHeight)
+			}
 		}
 
 		if m.panelHeight > 0 {

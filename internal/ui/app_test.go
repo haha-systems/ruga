@@ -506,6 +506,44 @@ func TestResizeAccountsForPanelInsets(t *testing.T) {
 	}
 }
 
+func TestCompactViewKeepsInputAndHelpVisible(t *testing.T) {
+	for _, height := range []int{4, 10} {
+		t.Run(fmt.Sprintf("height-%d", height), func(t *testing.T) {
+			m := interactiveTestModel()
+			m.input.SetValue("draft")
+			m.resize(100, height)
+
+			view := m.View()
+			if got := lipgloss.Height(view); got > m.height {
+				t.Fatalf("rendered height = %d, terminal height = %d", got, m.height)
+			}
+
+			if !strings.Contains(view, "draft") || !strings.Contains(view, "ctrl+c quit") {
+				t.Fatalf("compact view lost input or help: %q", view)
+			}
+		})
+	}
+}
+
+func TestSearchKeepsVerticalInspectorVisible(t *testing.T) {
+	for _, placement := range []PanelPlacement{PanelTop, PanelBottom} {
+		t.Run(string(placement), func(t *testing.T) {
+			m := interactiveTestModel()
+			m.panelPlacement = placement
+			m.focus = focusTelemetry
+			m.showTelemetry = true
+			m.setPanelSize(m.desiredPanelSize())
+			m.resize(100, 20)
+			m.searchActive = true
+			m.resize(100, 20)
+
+			if m.panelHeight == 0 || !strings.Contains(m.View(), "EVENT STREAM") {
+				t.Fatalf("search hid the focused vertical inspector: panel height %d, view %q", m.panelHeight, m.View())
+			}
+		})
+	}
+}
+
 func TestFocusChangePreservesViewportPosition(t *testing.T) {
 	m := interactiveTestModel()
 	m.panelPlacement = PanelRight
