@@ -56,7 +56,7 @@ func (b *Backend) maybeCompact(ctx context.Context, eventBus bus.Bus, threadID, 
 		return history, false, nil
 	}
 
-	plan := planCompaction(history, defaultKeepTurns)
+	plan := planCompactionToThreshold(history, threshold)
 	if plan.empty() {
 		return history, false, nil
 	}
@@ -73,6 +73,25 @@ func (b *Backend) maybeCompact(ctx context.Context, eventBus bus.Bus, threadID, 
 	}
 
 	return reduced, true, nil
+}
+
+func planCompactionToThreshold(history []session.Message, threshold int) compactionPlan {
+	body := history
+	if _, ok := leadingSummary(history); ok {
+		body = history[1:]
+	}
+
+	turnCount := len(splitTurns(body))
+	maxKeepTurns := min(defaultKeepTurns, turnCount-1)
+	for keepTurns := maxKeepTurns; keepTurns > 0; keepTurns-- {
+		plan := planCompaction(history, keepTurns)
+		summary := summarize(plan.dropped, plan.priorSummary, maxSummaryBytes)
+		if estimatedTokens(plan.assemble(summary)) < threshold {
+			return plan
+		}
+	}
+
+	return planCompaction(history, 1)
 }
 
 // buildSummary produces the compaction summary with the configured strategy,
@@ -220,38 +239,75 @@ func flattenTurns(turns [][]session.Message) []session.Message {
 }
 
 // summarize produces a deterministic, bounded summary of dropped messages. It
-// retains recent user requests as one-line snippets and folds in any prior
-// summary so earlier context is not silently lost.
+// retains recent messages across roles and folds in any prior summary.
 func summarize(dropped []session.Message, priorSummary string, maxBytes int) string {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "%s %d earlier messages omitted.\n", compactionMarker, len(dropped))
 
-	const (
-		maxSnippets = 6
-		snippetLen  = 100
-	)
+	priorBody := summaryBody(priorSummary)
+	if maxBytes > 0 {
+		priorBody = truncateUTF8(priorBody, min(768, maxBytes/2))
+	}
+
+	priorLine := ""
+	if priorBody != "" {
+		priorLine = "Earlier context: " + priorBody + "\n"
+	}
+
+	const maxSnippets = 8
+	snippetLimit := 120
+	if maxBytes > 0 {
+		snippetLimit = min(snippetLimit, max(1, maxBytes/10))
+	}
+
 	snippets := 0
 	for i := len(dropped) - 1; i >= 0 && snippets < maxSnippets; i-- {
-		if dropped[i].Role != "user" {
+		message := dropped[i]
+		if message.Role == "system" {
 			continue
 		}
 
-		snippet := oneLine(dropped[i].Content)
+		snippet := oneLine(message.Content)
+		if len(message.ToolCalls) > 0 {
+			names := make([]string, 0, len(message.ToolCalls))
+			for _, call := range message.ToolCalls {
+				names = append(names, call.Name)
+			}
+
+			if snippet != "" {
+				snippet += " · "
+			}
+
+			snippet += "tool calls: " + strings.Join(names, ", ")
+		}
+
 		if snippet == "" {
 			continue
 		}
 
-		if len(snippet) > snippetLen {
-			snippet = truncateUTF8(snippet, snippetLen) + "…"
+		label := message.Role
+		if message.Name != "" {
+			label += " " + message.Name
 		}
 
-		fmt.Fprintf(&builder, "- user: %s\n", snippet)
+		prefix := "- " + label + ": "
+		available := snippetLimit
+		if maxBytes > 0 {
+			available = min(available, maxBytes-builder.Len()-len(priorLine)-len(prefix)-1)
+		}
+
+		if available <= 0 {
+			break
+		}
+
+		snippet = truncateUTF8(snippet, available)
+		builder.WriteString(prefix)
+		builder.WriteString(snippet)
+		builder.WriteByte('\n')
 		snippets++
 	}
 
-	if body := summaryBody(priorSummary); body != "" {
-		builder.WriteString(body)
-	}
+	builder.WriteString(priorLine)
 
 	return truncateUTF8(builder.String(), maxBytes)
 }

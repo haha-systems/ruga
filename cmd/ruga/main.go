@@ -272,8 +272,11 @@ func run(options backendOptions) (resultErr error) {
 	}
 
 	uiErr := ui.Run(ctx, events, backendClient.Submit, actions, ui.Config{
-		Project: project, Branch: branch, Backend: backendDisplay, Model: modelName,
-		Panel: ui.PanelPlacement(options.panel),
+		Project: project,
+		Branch:  branch,
+		Backend: backendDisplay,
+		Model:   modelName,
+		Panel:   ui.PanelPlacement(options.panel),
 	})
 
 	stopBackendErr := backendClient.Close()

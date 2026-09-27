@@ -4,9 +4,6 @@ import "github.com/charmbracelet/lipgloss"
 
 func panelInsets(focused bool) (horizontal, vertical int) {
 	horizontal, vertical = 2, 2
-	if focused {
-		horizontal, vertical = horizontal+2, vertical+2
-	}
 
 	return horizontal, vertical
 }

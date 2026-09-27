@@ -11,6 +11,7 @@ import (
 // Theme is the only place that maps presentation meaning to terminal styles.
 // Additional themes can use the same roles without changing event renderers.
 type Theme struct {
+	BaseStyle     lipgloss.Style
 	Roles         map[presentation.SemanticRole]lipgloss.Style
 	Canvas        lipgloss.Style
 	Text          lipgloss.Style
@@ -18,6 +19,7 @@ type Theme struct {
 	Divider       lipgloss.Style
 	Panel         lipgloss.Style
 	FocusedPanel  lipgloss.Style
+	Composer      lipgloss.Style
 	MarkdownStyle ansi.StyleConfig
 }
 
@@ -35,6 +37,9 @@ func NewDefaultTheme() Theme {
 		red        = lipgloss.Color("#EA8D97")
 		line       = lipgloss.Color("#465264")
 	)
+
+	baseStyle := lipgloss.Style{}
+
 	markdownStyle := styles.DarkStyleConfig
 	markdownStyle.Document.Color = colorValue("#D9E1EA")
 	markdownStyle.Heading.Color = colorValue("#75D9E9")
@@ -48,25 +53,27 @@ func NewDefaultTheme() Theme {
 	markdownStyle.CodeBlock.StylePrimitive.Color = colorValue("#D9E1EA")
 
 	return Theme{
+		BaseStyle: baseStyle,
 		Roles: map[presentation.SemanticRole]lipgloss.Style{
-			presentation.RoleNavigation: lipgloss.NewStyle().Foreground(cyan),
-			presentation.RoleRead:       lipgloss.NewStyle().Foreground(cyan),
-			presentation.RoleMutation:   lipgloss.NewStyle().Foreground(violet),
-			presentation.RoleExecution:  lipgloss.NewStyle().Foreground(amber),
-			presentation.RoleReasoning:  lipgloss.NewStyle().Foreground(muted),
-			presentation.RoleSuccess:    lipgloss.NewStyle().Foreground(green),
-			presentation.RoleWarning:    lipgloss.NewStyle().Foreground(amber).Bold(true),
-			presentation.RoleFailure:    lipgloss.NewStyle().Foreground(red).Bold(true),
-			presentation.RoleMuted:      lipgloss.NewStyle().Foreground(muted),
-			presentation.RoleActive:     lipgloss.NewStyle().Foreground(amber),
-			presentation.RoleSelected:   lipgloss.NewStyle().Foreground(background).Background(cyan).Bold(true),
+			presentation.RoleNavigation: baseStyle.Foreground(cyan),
+			presentation.RoleRead:       baseStyle.Foreground(cyan),
+			presentation.RoleMutation:   baseStyle.Foreground(violet),
+			presentation.RoleExecution:  baseStyle.Foreground(amber),
+			presentation.RoleReasoning:  baseStyle.Foreground(muted),
+			presentation.RoleSuccess:    baseStyle.Foreground(green),
+			presentation.RoleWarning:    baseStyle.Foreground(amber).Bold(true),
+			presentation.RoleFailure:    baseStyle.Foreground(red).Bold(true),
+			presentation.RoleMuted:      baseStyle.Foreground(muted),
+			presentation.RoleActive:     baseStyle.Foreground(amber),
+			presentation.RoleSelected:   baseStyle.Foreground(background).Background(cyan).Bold(true),
 		},
-		Canvas:        lipgloss.NewStyle(),
-		Text:          lipgloss.NewStyle().Foreground(text),
-		Title:         lipgloss.NewStyle().Foreground(cyan).Bold(true),
-		Divider:       lipgloss.NewStyle().Foreground(line),
-		Panel:         lipgloss.NewStyle().Padding(1),
-		FocusedPanel:  lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(cyan).Padding(1),
+		Canvas:        baseStyle,
+		Text:          baseStyle.Foreground(text),
+		Title:         baseStyle.Foreground(cyan).Bold(true).Padding(0, 1),
+		Divider:       baseStyle.Foreground(line),
+		Panel:         baseStyle.Padding(1),
+		FocusedPanel:  baseStyle.Border(lipgloss.RoundedBorder()).BorderForeground(),
+		Composer:      baseStyle,
 		MarkdownStyle: markdownStyle,
 	}
 }

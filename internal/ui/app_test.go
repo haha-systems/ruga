@@ -388,35 +388,26 @@ func TestPanelPlacementControlsPaneGeometry(t *testing.T) {
 				}
 
 				telemetryOuter := m.telemetryViewport.Height + 1 + inspectorInsetsV
-				conversationOuter := m.viewport.Height + 1 + conversationInsetsV
-				if telemetryOuter != m.panelHeight || conversationOuter+telemetryOuter+1 != 10 {
+				conversationOuter := m.viewport.Height + conversationInsetsV
+				if telemetryOuter != m.panelHeight || conversationOuter+telemetryOuter+1 != m.mainRegionHeight() {
 					t.Fatalf("vertical pane outer heights = %d, %d with panel height %d", conversationOuter, telemetryOuter, m.panelHeight)
 				}
 			} else {
 				conversationOuter, inspectorOuter := m.viewWidths()
 				if m.viewport.Width != conversationOuter-conversationInsetsH || m.telemetryViewport.Width != inspectorOuter-inspectorInsetsH ||
-					m.viewport.Height != 10-1-conversationInsetsV || m.telemetryViewport.Height != 10-1-inspectorInsetsV {
+					m.viewport.Height != m.mainRegionHeight()-conversationInsetsV || m.telemetryViewport.Height != m.mainRegionHeight()-1-inspectorInsetsV {
 
 					t.Fatalf("horizontal pane geometry = %dx%d and %dx%d", m.viewport.Width, m.viewport.Height, m.telemetryViewport.Width, m.telemetryViewport.Height)
 				}
 			}
 
-			heading := m.viewHeading()
-			conversationAt, inspectorAt := strings.Index(heading, "CONVERSATION"), strings.Index(heading, "EVENT STREAM")
-			if conversationAt < 0 || inspectorAt < 0 {
-				t.Fatalf("pane heading = %q", heading)
-			}
-
-			if (placement == PanelLeft || placement == PanelTop) && inspectorAt > conversationAt {
-				t.Fatalf("inspector should precede conversation for %s placement: %q", placement, heading)
-			}
-
-			if (placement == PanelRight || placement == PanelBottom) && conversationAt > inspectorAt {
-				t.Fatalf("conversation should precede inspector for %s placement: %q", placement, heading)
+			view := m.View()
+			if !strings.Contains(view, "EVENT STREAM") || strings.Contains(view, "CONVERSATION") {
+				t.Fatalf("redundant conversation heading or missing inspector heading: %q", view)
 			}
 
 			body := m.viewBody()
-			conversationAt, inspectorAt = strings.Index(body, "conversation sentinel"), strings.Index(body, "event stream sentinel")
+			conversationAt, inspectorAt := strings.Index(body, "conversation sentinel"), strings.Index(body, "event stream sentinel")
 			if conversationAt < 0 || inspectorAt < 0 {
 				t.Fatalf("pane body = %q", body)
 			}
@@ -522,6 +513,21 @@ func TestCompactViewKeepsInputAndHelpVisible(t *testing.T) {
 				t.Fatalf("compact view lost input or help: %q", view)
 			}
 		})
+	}
+}
+
+func TestFooterUsesBottomRow(t *testing.T) {
+	m := interactiveTestModel()
+	m.resize(100, 20)
+
+	lines := strings.Split(m.View(), "\n")
+	lastLine := len(lines) - 1
+	for lastLine >= 0 && strings.TrimSpace(ansi.Strip(lines[lastLine])) == "" {
+		lastLine--
+	}
+
+	if lastLine != m.height-1 {
+		t.Fatalf("footer ends on row %d, want row %d", lastLine, m.height-1)
 	}
 }
 
@@ -702,7 +708,7 @@ func TestViewFocusedRegionBorder(t *testing.T) {
 		focus  focusTarget
 		marker string
 	}{
-		{name: "conversation", focus: focusTimeline, marker: "CONVERSATION"},
+		{name: "conversation", focus: focusTimeline, marker: "conversation sentinel"},
 		{name: "inspector", focus: focusTelemetry, marker: "EVENT STREAM"},
 		{name: "composer", focus: focusComposer, marker: "Message Codex"},
 		{name: "approval", focus: focusApproval, marker: "APPROVAL REQUIRED"},
@@ -726,6 +732,10 @@ func TestViewFocusedRegionBorder(t *testing.T) {
 			}
 
 			m.setFocus(test.focus)
+			if test.focus == focusTimeline {
+				m.viewport.SetContent(test.marker)
+			}
+
 			assertOnlyFocusedPanelContains(t, m.View(), test.marker)
 		})
 	}
@@ -876,7 +886,7 @@ func TestUnseenTelemetryWaitsForExplicitFollow(t *testing.T) {
 
 	updated, _ = m.Update(batchMsg{{Kind: "tool.started", ItemID: "new-tool", Summary: "read"}})
 	m = updated.(model)
-	if m.unseenTelemetry != 1 || m.telemetryViewport.AtBottom() || !strings.Contains(m.viewHeading(), "+1") {
+	if m.unseenTelemetry != 1 || m.telemetryViewport.AtBottom() || !strings.Contains(m.inspectorHeading(), "+1") {
 		t.Fatal("new telemetry did not remain unseen while scrolled away")
 	}
 

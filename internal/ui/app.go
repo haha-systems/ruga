@@ -125,9 +125,12 @@ func Run(ctx context.Context, events <-chan event.Event, submit func(context.Con
 	input.Prompt = "› "
 	input.Placeholder = "Message Codex and press Enter"
 	input.Focus()
+	input.TextStyle = defaultTheme.Composer
+
 	search := textinput.New()
 	search.Prompt = "/ "
 	search.Placeholder = "filter events"
+
 	config := Config{}
 	if len(configs) > 0 {
 		config = configs[0]
@@ -148,13 +151,24 @@ func Run(ctx context.Context, events <-chan event.Event, submit func(context.Con
 	}
 
 	program := tea.NewProgram(model{
-		stream: batchEvents(ctx, events), input: input, submit: submit, actions: actions,
-		ctx: ctx, status: "idle", focus: focus, submitting: make(map[string]bool),
-		project: config.Project, branch: config.Branch, backend: config.Backend,
-		modelName: config.Model, search: search, readOnly: config.ReadOnly,
-		panelPlacement:    config.Panel,
-		selectedTelemetry: -1, telemetryFollowing: true,
-		theme: defaultTheme,
+		stream:             batchEvents(ctx, events),
+		input:              input,
+		submit:             submit,
+		actions:            actions,
+		ctx:                ctx,
+		status:             "idle",
+		focus:              focus,
+		submitting:         make(map[string]bool),
+		project:            config.Project,
+		branch:             config.Branch,
+		backend:            config.Backend,
+		modelName:          config.Model,
+		search:             search,
+		readOnly:           config.ReadOnly,
+		panelPlacement:     config.Panel,
+		selectedTelemetry:  -1,
+		telemetryFollowing: true,
+		theme:              defaultTheme,
 	}, tea.WithContext(ctx), tea.WithAltScreen())
 	_, err := program.Run()
 	return err
@@ -167,6 +181,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		follow := !m.ready || m.viewport.AtBottom()
 		followTelemetry := m.telemetryFollowing && (!m.ready || m.telemetryViewport.AtBottom())
+
 		if msg.Width < 70 {
 			m.panelPosition, m.panelVelocity, m.panelWidth, m.panelHeight = 0, 0, 0, 0
 			m.panelAnimating = false
@@ -186,6 +201,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		follow := !m.ready || m.viewport.AtBottom()
 		followTelemetry := m.telemetryFollowing && (!m.ready || m.telemetryViewport.AtBottom())
 		target := 0.0
+
 		if m.showTelemetry {
 			target = float64(m.desiredPanelSize())
 		}
@@ -315,12 +331,15 @@ func (m model) View() string {
 	parts := []string{header}
 
 	if panel := m.approvalPanel(); panel != "" {
-		parts = append(parts, panel)
+		parts = append(parts, "", panel)
 	}
 
 	parts = append(parts,
+		"",
 		m.viewPanels(),
+		"",
 		renderPanel(m.activeTheme(), m.input.View(), m.width, m.focus == focusComposer),
+		"",
 		footer,
 	)
 	view := m.activeTheme().Canvas.Width(m.width).Height(m.height).Render(strings.Join(parts, "\n"))
@@ -358,6 +377,10 @@ func (m model) compactView() string {
 	lines := strings.Split(body, "\n")
 	if len(lines) > bodyRows {
 		lines = lines[:bodyRows]
+	}
+
+	for len(lines) < bodyRows {
+		lines = append(lines, "")
 	}
 
 	parts := []string{header}
@@ -428,9 +451,7 @@ func (m model) viewPanels() string {
 
 func (m model) conversationRegion(width int) string {
 	focused := m.focus == focusTimeline
-	horizontal, _ := panelInsets(focused)
-	heading := m.style(presentation.RoleMuted).Render(fitLine("CONVERSATION", max(1, width-horizontal)))
-	content := lipgloss.JoinVertical(lipgloss.Left, heading, m.viewport.View())
+	content := lipgloss.JoinVertical(lipgloss.Left, m.viewport.View())
 	return renderPanel(m.activeTheme(), content, width, focused)
 }
 
@@ -438,49 +459,16 @@ func (m model) inspectorRegion(width int) string {
 	focused := m.focus == focusTelemetry
 	horizontal, _ := panelInsets(focused)
 	innerWidth := max(1, width-horizontal)
+
 	parts := []string{m.style(presentation.RoleMuted).Render(fitLine(m.inspectorHeading(), innerWidth))}
+
 	if m.searchActive || m.search.Value() != "" {
 		parts = append(parts, m.search.View())
 	}
 
 	parts = append(parts, m.telemetryViewport.View())
+
 	return renderPanel(m.activeTheme(), strings.Join(parts, "\n"), width, focused)
-}
-
-func (m model) viewHeading() string {
-	if !m.panelVisible() {
-		return m.style(presentation.RoleMuted).Render(fitLine("CONVERSATION", m.width))
-	}
-
-	if m.width < 70 {
-		return m.style(presentation.RoleMuted).Render(fitLine(m.inspectorHeading(), m.width))
-	}
-
-	if m.panelPlacement.vertical() {
-		conversation, inspector := "CONVERSATION", m.inspectorHeading()
-		if m.panelPlacement == PanelTop {
-			conversation, inspector = inspector, conversation
-		}
-
-		return m.style(presentation.RoleMuted).Render(fitLine(conversation+"  ·  "+inspector, m.width))
-	}
-
-	left, right := m.viewWidths()
-	conversationHeading := m.style(presentation.RoleMuted).Width(left).Render("CONVERSATION")
-	inspectorHeading := m.style(presentation.RoleMuted).Width(right).Render(fitLine(m.inspectorHeading(), right))
-	if m.panelPlacement == PanelLeft {
-		return lipgloss.JoinHorizontal(lipgloss.Top,
-			inspectorHeading,
-			m.activeTheme().Divider.Render("│"),
-			conversationHeading,
-		)
-	}
-
-	return lipgloss.JoinHorizontal(lipgloss.Top,
-		conversationHeading,
-		m.activeTheme().Divider.Render("│"),
-		inspectorHeading,
-	)
 }
 
 func (m model) inspectorHeading() string {
@@ -592,11 +580,11 @@ func (m *model) resize(width, height int) {
 		searchRows = 1
 	}
 
-	conversationHeight := max(1, mainHeight-1-conversationInsetsV)
+	conversationHeight := max(1, mainHeight-conversationInsetsV)
 	telemetryHeight := max(1, mainHeight-1-searchRows-telemetryInsetsV)
 	if m.panelHeight > 0 && m.width >= 70 {
 		inspectorMinHeight := 1 + telemetryInsetsV + searchRows + 1
-		conversationMinHeight := 1 + conversationInsetsV + 1
+		conversationMinHeight := conversationInsetsV + 1
 		maxPanelHeight := max(0, mainHeight-1-conversationMinHeight)
 		if maxPanelHeight < inspectorMinHeight {
 			m.panelHeight = 0
@@ -609,7 +597,7 @@ func (m *model) resize(width, height int) {
 
 		if m.panelHeight > 0 {
 			telemetryHeight = max(1, m.panelHeight-1-telemetryInsetsV-searchRows)
-			conversationHeight = max(1, mainHeight-m.panelHeight-1-1-conversationInsetsV)
+			conversationHeight = max(1, mainHeight-m.panelHeight-1-conversationInsetsV)
 		}
 	}
 
@@ -694,13 +682,14 @@ func (m model) headerLine() string {
 	}
 
 	if len(parts) == 0 {
-		parts = append(parts, "ruga")
+		parts = append(parts, "Ruga")
 	}
 
 	statusStyle := m.style(presentation.RoleMuted)
-	if m.status == "working" || m.status == "interrupting" {
+	switch m.status {
+	case "working", "interrupting":
 		statusStyle = m.style(presentation.RoleActive)
-	} else if m.status == "error" {
+	case "error":
 		statusStyle = m.style(presentation.RoleFailure)
 	}
 

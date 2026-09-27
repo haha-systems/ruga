@@ -13,7 +13,7 @@ records the *why* and the seams, while the PRDs hold the contracts.
 |------|-------|--------|
 | Core harness, event bus, recording/replay | Implemented | `PRD.md` |
 | Sessions, tool runtime, OpenAI-compatible backend | Implemented | `PRD-2.md` |
-| Semantic TUI (presentation, inspector, semantic roles) | In progress | `PRD-3.md` |
+| Semantic TUI (presentation, inspector, semantic roles) | Implemented (revisit as needed) | `PRD-3.md` |
 | Multiline composer | Design | §6 |
 | Markdown rendering | Implemented | §7 |
 | Selectable themes | Design (theme carries Markdown style) | §8 |

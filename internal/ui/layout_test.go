@@ -10,7 +10,7 @@ func TestPanelInsets(t *testing.T) {
 	for _, test := range []struct {
 		focused bool
 		want    [2]int
-	}{{false, [2]int{2, 2}}, {true, [2]int{4, 4}}} {
+	}{{false, [2]int{2, 2}}, {true, [2]int{2, 2}}} {
 		horizontal, vertical := panelInsets(test.focused)
 		got := [2]int{horizontal, vertical}
 		if got != test.want {
@@ -24,7 +24,7 @@ func TestPanelStyle(t *testing.T) {
 	for _, test := range []struct {
 		focused bool
 		wantH   int
-	}{{false, 3}, {true, 5}} {
+	}{{false, 3}, {true, 3}} {
 		view := renderPanel(theme, "x", 10, test.focused)
 		if got := lipgloss.Width(view); got != 10 {
 			t.Fatalf("renderPanel width = %d, want 10", got)
