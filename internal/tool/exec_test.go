@@ -22,6 +22,27 @@ func TestExecBoundsOutputAndReportsExitStatus(t *testing.T) {
 	}
 }
 
+func TestExecRejectsOversizedCommandWithStructuredError(t *testing.T) {
+	oversized := strings.Repeat("a", maxExecCommand+1)
+	result := (Exec{Root: t.TempDir()}).Execute(context.Background(), mustJSON(map[string]string{"command": oversized}))
+	if !result.IsError {
+		t.Fatal("oversized command did not error")
+	}
+
+	if !strings.Contains(result.Content, "over the") || !strings.Contains(result.Content, "write a file") {
+		t.Fatalf("oversized command error = %q, want byte count and file suggestion", result.Content)
+	}
+}
+
+func TestExecAcceptsCommandAtLimit(t *testing.T) {
+	// A command just under the ceiling must run rather than be rejected.
+	padding := strings.Repeat("#", maxExecCommand-16)
+	result := (Exec{Root: t.TempDir()}).Execute(context.Background(), mustJSON(map[string]string{"command": padding + "; true"}))
+	if strings.Contains(result.Content, "over the") {
+		t.Fatalf("command at the ceiling was rejected: %q", result.Content)
+	}
+}
+
 func TestExecRejectsWorkingDirectoryOutsideRepository(t *testing.T) {
 	result := (Exec{Root: t.TempDir()}).Execute(context.Background(), mustJSON(map[string]string{
 		"command": "pwd", "cwd": "../outside",

@@ -271,6 +271,10 @@ Inputs:
 * optional timeout
 * optional output limit
 
+The command string has a generous ceiling; anything larger is better expressed
+as a written file than a shell one-liner. The ceiling is distinct from the output
+limit: oversized output is truncated, whereas an oversized command is rejected.
+
 Return:
 
 * exit code

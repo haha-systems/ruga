@@ -16,6 +16,9 @@ const (
 	maxExecTimeout     = 120
 	defaultExecOutput  = 4096
 	maxExecOutput      = 8192
+	// maxExecCommand bounds the command string. It is generous: anything
+	// larger is better expressed as a written file than a shell one-liner.
+	maxExecCommand = 64 * 1024
 )
 
 type Exec struct{ Root string }
@@ -26,7 +29,7 @@ func (Exec) Schema() ToolSchema {
 	return ToolSchema{
 		Description: "Run a shell command in the repository with bounded output and timeout.", Type: "object",
 		Properties: map[string]Property{
-			"command":            {Type: "string", Description: "Command to run."},
+			"command":            {Type: "string", Description: "Command to run (bounded by a generous ceiling; write a file for anything larger)."},
 			"cwd":                {Type: "string", Description: "Optional repository-relative working directory."},
 			"timeout_seconds":    {Type: "integer", Description: "Timeout from 1 to 120 seconds; defaults to 30."},
 			"output_limit_bytes": {Type: "integer", Description: "Combined stdout/stderr limit; defaults to 4096 bytes."},
@@ -51,8 +54,8 @@ func (tool Exec) Execute(ctx context.Context, arguments json.RawMessage) ToolRes
 		return toolError("command is required")
 	}
 
-	if len(input.Command) > 4096 {
-		return toolError("command exceeds the 4096-byte limit")
+	if len(input.Command) > maxExecCommand {
+		return toolError("command is %d bytes, over the %d-byte limit; write a file instead", len(input.Command), maxExecCommand)
 	}
 
 	if input.TimeoutSeconds == 0 {
