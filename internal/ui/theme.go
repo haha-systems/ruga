@@ -16,6 +16,8 @@ type Theme struct {
 	Text          lipgloss.Style
 	Title         lipgloss.Style
 	Divider       lipgloss.Style
+	Panel         lipgloss.Style
+	FocusedPanel  lipgloss.Style
 	ApprovalPanel lipgloss.Style
 	MarkdownStyle ansi.StyleConfig
 }
@@ -64,6 +66,8 @@ func NewDefaultTheme() Theme {
 		Text:          lipgloss.NewStyle().Foreground(text),
 		Title:         lipgloss.NewStyle().Foreground(cyan).Bold(true),
 		Divider:       lipgloss.NewStyle().Foreground(line),
+		Panel:         lipgloss.NewStyle().Padding(1),
+		FocusedPanel:  lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(cyan).Padding(1),
 		ApprovalPanel: lipgloss.NewStyle().Border(lipgloss.NormalBorder(), false, false, false, true).BorderForeground(amber).PaddingLeft(1),
 		MarkdownStyle: markdownStyle,
 	}
