@@ -183,6 +183,9 @@ func (m *Model) Apply(ev event.Event) {
 		m.Activity.Usage = ev.Summary
 		m.operational(ev)
 
+	case "context.compacted":
+		m.operational(ev)
+
 	default:
 		m.operational(ev)
 	}
@@ -402,6 +405,8 @@ func classify(ev event.Event) (TelemetryKind, string, SemanticRole) {
 		return TelemetryTurn, "Turn", RoleMuted
 	case "usage.updated":
 		return TelemetryUsage, "Usage", RoleMuted
+	case "context.compacted":
+		return TelemetrySession, "Context", RoleMuted
 	default:
 		return TelemetryOther, "Event", RoleMuted
 	}

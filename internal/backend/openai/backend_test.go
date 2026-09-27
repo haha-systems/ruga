@@ -242,6 +242,107 @@ func TestBackendOmitsUsageWhenServerReportsNone(t *testing.T) {
 	}
 }
 
+func TestBackendCompactsContextAndSurvivesResume(t *testing.T) {
+	var requests []completionRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request completionRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+
+		requests = append(requests, request)
+		w.Header().Set("Content-Type", "text/event-stream")
+		chunk, _ := json.Marshal(map[string]any{
+			"choices": []any{map[string]any{"delta": map[string]string{"content": "ok"}}},
+			"usage":   map[string]any{"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+		})
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", chunk)
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+	store := session.NewStore(t.TempDir())
+
+	// Seed a long transcript: five completed turns whose size comfortably
+	// crosses the compaction threshold for the configured window.
+	state := session.New("openai", "/repo")
+	state.Model = "test-model"
+	padding := strings.Repeat("x", 200)
+	for i := 0; i < 5; i++ {
+		state.Messages = append(state.Messages,
+			session.Message{Role: "user", Content: fmt.Sprintf("request %d %s", i, padding)},
+			session.Message{Role: "assistant", Content: fmt.Sprintf("answer %d %s", i, padding)},
+		)
+	}
+
+	if err := store.Save(state); err != nil {
+		t.Fatalf("save seeded session: %v", err)
+	}
+
+	client := New(Config{BaseURL: server.URL + "/v1", Model: "test-model", ContextLimit: 400})
+	client.ConfigureSession(state, false, store.Save)
+	events := &captureBus{}
+	if err := client.Start(context.Background(), events); err != nil {
+		t.Fatalf("Start(): %v", err)
+	}
+
+	if err := client.Submit(context.Background(), "next request"); err != nil {
+		t.Fatalf("Submit(): %v", err)
+	}
+
+	_ = client.Close()
+
+	// The request carried a compacted prefix: one summary plus the kept turns.
+	if len(requests) != 1 {
+		t.Fatalf("model requests = %d, want 1", len(requests))
+	}
+
+	first := requests[0].Messages
+	if first[0].Role != "system" || !strings.Contains(first[0].Content, "[compacted history]") {
+		t.Fatalf("request did not start with a compaction summary: %+v", first)
+	}
+
+	var compacted bool
+	for _, ev := range events.snapshot() {
+		if ev.Kind == "context.compacted" {
+			compacted = true
+		}
+	}
+
+	if !compacted {
+		t.Fatalf("no context.compacted event published: %+v", events.snapshot())
+	}
+
+	// The compaction is durable: resume reconstructs the reduced transcript.
+	reloaded, err := store.Load(state.ID)
+	if err != nil {
+		t.Fatalf("load saved session: %v", err)
+	}
+
+	if reloaded.Summary == "" || reloaded.CompactedAt.IsZero() {
+		t.Fatalf("session did not persist compaction state: %+v", reloaded)
+	}
+
+	if reloaded.Messages[0].Role != "system" || !strings.Contains(reloaded.Messages[0].Content, "[compacted history]") {
+		t.Fatalf("persisted history was not compacted: %+v", reloaded.Messages)
+	}
+
+	resumed := New(Config{BaseURL: server.URL + "/v1", Model: "test-model", ContextLimit: 400})
+	resumed.ConfigureSession(reloaded, true, store.Save)
+	if err := resumed.Start(context.Background(), &captureBus{}); err != nil {
+		t.Fatalf("resumed Start(): %v", err)
+	}
+
+	if err := resumed.Submit(context.Background(), "after resume"); err != nil {
+		t.Fatalf("resumed Submit(): %v", err)
+	}
+
+	_ = resumed.Close()
+	last := requests[len(requests)-1].Messages
+	if last[0].Role != "system" || !strings.Contains(last[0].Content, "[compacted history]") {
+		t.Fatalf("resume re-inflated the transcript: %+v", last)
+	}
+}
+
 func TestBackendPublishesHTTPFailure(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, `{"error":"invalid model"}`, http.StatusBadRequest)

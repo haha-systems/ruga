@@ -57,6 +57,7 @@ func main() {
 	flags.StringVar(&options.openAIBaseURL, "openai-base-url", "https://api.openai.com/v1", "OpenAI-compatible API base URL")
 	flags.StringVar(&options.openAIModel, "openai-model", "gpt-5.4-mini", "model for the OpenAI-compatible backend")
 	flags.StringVar(&options.openAIKeyEnv, "openai-api-key-env", "OPENAI_API_KEY", "environment variable containing the OpenAI-compatible API key")
+	flags.IntVar(&options.contextLimit, "context-limit", 0, "model context window in tokens for compaction (0 uses the conservative default)")
 	flags.Func("panel", "event stream placement: right, left, bottom, or top", func(value string) error {
 		return setPanelOption(&options, value)
 	})
@@ -116,6 +117,7 @@ type backendOptions struct {
 	openAIBaseURL    string
 	openAIModel      string
 	openAIKeyEnv     string
+	contextLimit     int
 	resumeLatest     bool
 	resumeID         string
 	openAIBaseURLSet bool
@@ -324,10 +326,11 @@ func newBackend(options backendOptions, workingDir string, lookupEnv func(string
 		return codex.New(options.codexBinary, workingDir), nil
 	case "openai":
 		return openaibackend.New(openaibackend.Config{
-			BaseURL:   options.openAIBaseURL,
-			Model:     options.openAIModel,
-			APIKey:    lookupEnv(options.openAIKeyEnv),
-			APIKeyEnv: options.openAIKeyEnv,
+			BaseURL:      options.openAIBaseURL,
+			Model:        options.openAIModel,
+			APIKey:       lookupEnv(options.openAIKeyEnv),
+			APIKeyEnv:    options.openAIKeyEnv,
+			ContextLimit: options.contextLimit,
 		}), nil
 
 	default:

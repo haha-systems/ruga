@@ -45,6 +45,8 @@ type Session struct {
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
 	Messages       []Message `json:"messages,omitempty"`
+	Summary        string    `json:"summary,omitempty"`
+	CompactedAt    time.Time `json:"compacted_at,omitempty"`
 }
 
 // Store persists each session as an atomically replaced JSON file.

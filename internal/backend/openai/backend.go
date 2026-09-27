@@ -40,16 +40,21 @@ type Config struct {
 	Model     string
 	APIKey    string
 	APIKeyEnv string
+
+	// ContextLimit is the model's context window in tokens. A conservative
+	// default is used when it is zero or negative.
+	ContextLimit int
 }
 
 // Backend keeps protocol details local to this adapter and publishes only
 // application-owned events.
 type Backend struct {
-	baseURL   string
-	model     string
-	apiKey    string
-	apiKeyEnv string
-	client    *http.Client
+	baseURL      string
+	model        string
+	apiKey       string
+	apiKeyEnv    string
+	contextLimit int
+	client       *http.Client
 
 	mu       sync.Mutex
 	eventBus bus.Bus
@@ -69,11 +74,12 @@ func New(config Config) *Backend {
 	}
 
 	return &Backend{
-		baseURL:   baseURL,
-		model:     strings.TrimSpace(config.Model),
-		apiKey:    config.APIKey,
-		apiKeyEnv: config.APIKeyEnv,
-		client:    http.DefaultClient,
+		baseURL:      baseURL,
+		model:        strings.TrimSpace(config.Model),
+		apiKey:       config.APIKey,
+		apiKeyEnv:    config.APIKeyEnv,
+		contextLimit: config.ContextLimit,
+		client:       http.DefaultClient,
 	}
 }
 
@@ -178,7 +184,7 @@ func (b *Backend) Submit(ctx context.Context, prompt string) error {
 	}
 
 	b.busy = true
-	conversation := append([]message(nil), b.history...)
+	conversation := append([]session.Message(nil), b.state.Messages...)
 	threadID := b.session
 	eventBus := b.eventBus
 	b.mu.Unlock()
@@ -193,7 +199,7 @@ func (b *Backend) Submit(ctx context.Context, prompt string) error {
 		return fmt.Errorf("persist OpenAI-compatible user message: %w", err)
 	}
 
-	conversation = append(conversation, messageFromSession(user))
+	conversation = append(conversation, user)
 	if err := publishTo(ctx, eventBus, event.Event{
 		Backend: "openai", Kind: "user.message", ThreadID: threadID,
 		Summary: prompt, Data: map[string]any{"text": prompt},
@@ -210,10 +216,22 @@ func (b *Backend) Submit(ctx context.Context, prompt string) error {
 
 	turnStarted := time.Now()
 	toolCallCount, toolResultBytes := 0, 0
+	reportedTokens := 0
 	var toolDuration, toolWallDuration time.Duration
 	for round := 0; round <= maxToolRounds; round++ {
+		reduced, compacted, err := b.maybeCompact(ctx, eventBus, threadID, turnID, conversation, reportedTokens)
+		if err != nil {
+			return b.failTurn(ctx, eventBus, threadID, turnID, fmt.Errorf("compact OpenAI-compatible context: %w", err))
+		}
+
+		if compacted {
+			conversation = reduced
+			reportedTokens = 0
+		}
+
+		messages := messagesFrom(conversation)
 		request := completionRequest{
-			Model: b.model, Messages: conversation, Stream: true,
+			Model: b.model, Messages: messages, Stream: true,
 			StreamOptions: &streamOptions{IncludeUsage: true},
 		}
 		b.mu.Lock()
@@ -234,7 +252,7 @@ func (b *Backend) Submit(ctx context.Context, prompt string) error {
 			if len(request.Tools) > 0 {
 				parallel := true
 				request.ParallelToolCalls = &parallel
-				request.Messages = append([]message{{Role: "system", Content: parallelToolInstruction}}, conversation...)
+				request.Messages = append([]message{{Role: "system", Content: parallelToolInstruction}}, messages...)
 			}
 		}
 
@@ -251,6 +269,8 @@ func (b *Backend) Submit(ctx context.Context, prompt string) error {
 			if err := publishUsage(ctx, eventBus, threadID, turnID, response.Usage); err != nil {
 				return err
 			}
+
+			reportedTokens = response.Usage.PromptTokens
 		}
 
 		toolCallCount += len(response.ToolCalls)
@@ -265,7 +285,7 @@ func (b *Backend) Submit(ctx context.Context, prompt string) error {
 			return b.failTurn(ctx, eventBus, threadID, turnID, fmt.Errorf("persist OpenAI-compatible assistant message: %w", err))
 		}
 
-		conversation = append(conversation, messageFromSession(assistant))
+		conversation = append(conversation, assistant)
 		if len(response.ToolCalls) == 0 {
 			if err := publishTo(ctx, eventBus, event.Event{
 				Backend: "openai", Kind: "message.completed", ThreadID: threadID, TurnID: turnID,
@@ -320,7 +340,7 @@ func (b *Backend) Submit(ctx context.Context, prompt string) error {
 				return b.failTurn(ctx, eventBus, threadID, turnID, fmt.Errorf("persist tool result %q: %w", result.Call.ID, err))
 			}
 
-			conversation = append(conversation, messageFromSession(toolMessage))
+			conversation = append(conversation, toolMessage)
 			if err := publishToolCompleted(ctx, eventBus, threadID, turnID, result); err != nil {
 				return err
 			}
@@ -483,6 +503,49 @@ type assistantResponse struct {
 	Content   string
 	ToolCalls []toolCall
 	Usage     *usage
+}
+
+// replaceMessages rewrites both the persisted and in-memory history, so a
+// compaction survives resume instead of re-inflating the full transcript.
+func (b *Backend) replaceMessages(messages []session.Message) error {
+	b.mu.Lock()
+	state := b.state
+	state.Messages = append([]session.Message(nil), messages...)
+	state.Summary = latestSummary(messages)
+	state.CompactedAt = time.Now().UTC()
+	state.UpdatedAt = state.CompactedAt
+	b.state = state
+	b.history = make([]message, 0, len(messages))
+	for _, saved := range messages {
+		b.history = append(b.history, messageFromSession(saved))
+	}
+
+	save := b.save
+	b.mu.Unlock()
+	if save != nil {
+		if err := save(state); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func messagesFrom(messages []session.Message) []message {
+	converted := make([]message, 0, len(messages))
+	for _, saved := range messages {
+		converted = append(converted, messageFromSession(saved))
+	}
+
+	return converted
+}
+
+func latestSummary(messages []session.Message) string {
+	if len(messages) == 0 || messages[0].Role != "system" {
+		return ""
+	}
+
+	return messages[0].Content
 }
 
 func (b *Backend) persistMessages(messages ...session.Message) error {
