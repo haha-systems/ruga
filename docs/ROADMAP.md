@@ -14,7 +14,7 @@ records the *why* and the seams, while the PRDs hold the contracts.
 | Core harness, event bus, recording/replay | Implemented | `PRD.md` |
 | Sessions, tool runtime, OpenAI-compatible backend | Implemented | `PRD-2.md` |
 | Semantic TUI (presentation, inspector, semantic roles) | Implemented (revisit as needed) | `PRD-3.md` |
-| Multiline composer | Design | §6 |
+| Multiline composer | Implemented | §6 |
 | Markdown rendering | Implemented | §7 |
 | Selectable themes | Design (theme carries Markdown style) | §8 |
 | Movable event stream | Implemented | §9, `PRD-3.md` Slice 5 |
@@ -322,46 +322,28 @@ Do this before QAC (§4), since CES creates the units QAC allocates over.
 Let the user compose and edit a multi-line prompt before sending, instead of
 submitting on the first Enter.
 
-### What already exists
+### Current behavior
 
-The composer is a single-line `textinput.Model` (`internal/ui/app.go`), so the
-input surface is one row and Enter always submits. Pressing Enter starts a turn
-immediately.
+The composer uses `bubbles/textarea` in `internal/ui/app.go`. Enter adds a line;
+Ctrl+S sends the prompt. The composer wraps long lines, grows to four rows, then
+scrolls internally.
 
-### Approach
+### Implementation notes
 
-Swap `textinput` for `bubbles/textarea`, which is already available through the
-existing Bubbles dependency. Then choose a submission convention, since Enter
-can no longer mean "send":
-
-- **Ctrl+S or Alt+Enter to submit**, Enter inserts a newline (common in
-  terminal agents). Predictable, but a changed muscle memory.
-- **Enter submits with an explicit continuation affordance**, and a trailing
-  backslash or unclosed fence inserts a newline.
-
-The first is simpler and easier to document in the footer keys.
-
-### Seams
-
-- `internal/ui/app.go`: `model.input` becomes a `textarea.Model`; `resize` and
-  the footer keys change.
-- The composer grows with content up to a cap, then scrolls internally, so the
-  chrome height calculation in `resize` must account for a variable number of
-  composer rows.
-- `fitLine` and the prompt-width math already exist and are reused.
+- `internal/ui/app.go` sizes the input and conversation together on resize.
+- The composer height is capped so it does not push the conversation or
+  inspector out of view.
+- Pasted line breaks stay in the prompt and do not send it.
 
 ### Constraints
 
-- Keep Enter-submits as an option if multiline becomes a mode, to avoid
-  surprising existing users.
-- Do not let a growing composer crowd out the conversation or the inspector;
-  cap its height and scroll it.
-- Pasted text with newlines already arrives with newlines; make sure paste does
-  not accidentally submit.
+- Ctrl+S sends; Enter adds a line.
+- The composer grows to four rows, then scrolls internally.
 
-### Trigger
+### Status
 
-Independent and self-contained. Safe to do any time; low risk.
+Implemented with `bubbles/textarea`. Keep Enter for new lines and Ctrl+S to
+send when changing the composer.
 
 ---
 
@@ -638,8 +620,8 @@ usage accounting (done) ──▶ quota stats in top line (§14)
 ```
 
 Done so far: **§1** (parallel tool calls), **§2** (context compaction),
-**§7** (markdown rendering), and **usage accounting** for the OpenAI-compatible
-path.
+**§6** (multiline composer), **§7** (markdown rendering), and **usage
+accounting** for the OpenAI-compatible path.
 
 Suggested order for what remains: **§5** → **§4** → **§3** prefix layer. The
 tool-level memory slice of §3 can land at any time. The interface track

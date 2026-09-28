@@ -129,6 +129,24 @@ func TestApprovalRequestsWaitForApplicationDecision(t *testing.T) {
 	}
 }
 
+func TestApprovalPayloadSummarizesStructuredDetails(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "command action", raw: `[{"type":"delete","path":"cache.tmp"}]`, want: "delete cache.tmp"},
+		{name: "tool input", raw: `{"query":"Go","limit":5}`, want: "limit: 5, query: Go"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := approvalPayload(json.RawMessage(test.raw), 240); got != test.want {
+				t.Fatalf("approvalPayload() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func receiveApprovalEvent(t *testing.T, events <-chan event.Event) event.Event {
 	t.Helper()
 	select {

@@ -326,10 +326,19 @@ func TestBackendCompactsContextAndSurvivesResume(t *testing.T) {
 		t.Fatalf("persisted history was not compacted: %+v", reloaded.Messages)
 	}
 
+	if len(reloaded.Transcript) != 12 || !strings.HasPrefix(reloaded.Transcript[0].Content, "request 0") {
+		t.Fatalf("compacted session lost its display transcript: %+v", reloaded.Transcript)
+	}
+
 	resumed := New(Config{BaseURL: server.URL + "/v1", Model: "test-model", ContextLimit: 400})
 	resumed.ConfigureSession(reloaded, true, store.Save)
-	if err := resumed.Start(context.Background(), &captureBus{}); err != nil {
+	resumedEvents := &captureBus{}
+	if err := resumed.Start(context.Background(), resumedEvents); err != nil {
 		t.Fatalf("resumed Start(): %v", err)
+	}
+
+	if got := resumedEvents.snapshot(); len(got) < 12 || got[1].Kind != "user.message" || got[1].Summary != reloaded.Transcript[0].Content {
+		t.Fatalf("resume did not restore the full display transcript: %+v", got)
 	}
 
 	if err := resumed.Submit(context.Background(), "after resume"); err != nil {
@@ -606,6 +615,10 @@ func TestBackendResumesPersistedConversation(t *testing.T) {
 		t.Fatalf("persisted messages = %+v", saved.Messages)
 	}
 
+	if len(saved.Transcript) != 2 || saved.Transcript[0].Content != "my code is amber-47" || saved.Transcript[1].Content != "continued" {
+		t.Fatalf("persisted display transcript = %+v", saved.Transcript)
+	}
+
 	resumedBus := &captureBus{}
 	resumed := New(Config{BaseURL: server.URL + "/v1", Model: "test-model"})
 	resumed.ConfigureSession(saved, true, store.Save)
@@ -627,8 +640,36 @@ func TestBackendResumesPersistedConversation(t *testing.T) {
 	}
 
 	gotEvents := resumedBus.snapshot()
-	if gotEvents[0].ThreadID != state.ID || gotEvents[1].Kind != "session.resumed" {
+	if gotEvents[0].ThreadID != state.ID || gotEvents[1].Kind != "user.message" || gotEvents[1].Summary != "my code is amber-47" {
 		t.Fatalf("resume events do not preserve session identity: %+v", gotEvents[:2])
+	}
+
+	if gotEvents[2].Kind != "message.completed" || gotEvents[2].Summary != "continued" {
+		t.Fatalf("resumed assistant history = %+v", gotEvents[:4])
+	}
+}
+
+func TestPersistMessagesBackfillsTranscriptForOlderSessions(t *testing.T) {
+	store := session.NewStore(t.TempDir())
+	state := session.New("openai", "/repo")
+	state.Messages = []session.Message{
+		{Role: "user", Content: "earlier prompt"},
+		{Role: "assistant", Content: "earlier answer"},
+	}
+	backendClient := New(Config{Model: "test-model"})
+	backendClient.ConfigureSession(state, false, store.Save)
+
+	if err := backendClient.persistMessages(session.Message{Role: "user", Content: "new prompt"}); err != nil {
+		t.Fatalf("persistMessages(): %v", err)
+	}
+
+	saved, err := store.Load(state.ID)
+	if err != nil {
+		t.Fatalf("load session: %v", err)
+	}
+
+	if len(saved.Transcript) != 3 || saved.Transcript[0].Content != "earlier prompt" || saved.Transcript[1].Content != "earlier answer" || saved.Transcript[2].Content != "new prompt" {
+		t.Fatalf("backfilled transcript = %+v", saved.Transcript)
 	}
 }
 
@@ -762,8 +803,8 @@ func TestBackendStreamsExecutesAndPersistsMultipleToolCalls(t *testing.T) {
 		t.Fatalf("model requests after resume = %d, want 3", len(requests))
 	}
 
-	if got := resumedEvents.snapshot(); len(got) < 2 || got[1].Kind != "session.resumed" {
-		t.Fatalf("resumed session event missing: %+v", got)
+	if got := resumedEvents.snapshot(); len(got) < 4 || got[3].Kind != "session.resumed" {
+		t.Fatalf("resumed session event missing after conversation history: %+v", got)
 	}
 }
 

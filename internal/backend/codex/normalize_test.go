@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	codexgo "github.com/zealbase/codex-app-server-go"
+
+	"github.com/haha-systems/ruga/internal/presentation"
 )
 
 func TestNormalize(t *testing.T) {
@@ -166,5 +168,43 @@ func TestNormalizeExtractsIdentifiers(t *testing.T) {
 	ev := normalize("item/agentMessage/delta", json.RawMessage(`{"threadId":"th-1","turnId":"tu-2","itemId":"it-3","text":"hi"}`))
 	if ev.ThreadID != "th-1" || ev.TurnID != "tu-2" || ev.ItemID != "it-3" {
 		t.Fatalf("identifiers = (%q, %q, %q)", ev.ThreadID, ev.TurnID, ev.ItemID)
+	}
+}
+
+func TestConversationHistoryKeepsUserAndAssistantTurns(t *testing.T) {
+	var thread codexgo.Thread
+	if err := json.Unmarshal(
+		[]byte(
+			`{"id":"thread-1","turns":[{"id":"turn-1","items":[{"id":"user-1","type":"userMessage","content":[{"type":"text","text":"old prompt"}]},{"id":"reason-1","type":"reasoning","text":"private reasoning"},{"id":"assistant-1","type":"agentMessage","text":"old answer"}]}]}`,
+		),
+		&thread,
+	); err != nil {
+		t.Fatalf("decode thread: %v", err)
+	}
+
+	got := conversationHistory(thread)
+	if len(got) != 2 {
+		t.Fatalf("history length = %d, want 2: %+v", len(got), got)
+	}
+
+	if got[0].Kind != "user.message" || got[0].Summary != "old prompt" || got[1].Kind != "message.completed" || got[1].Summary != "old answer" {
+		t.Fatalf("history = %+v", got)
+	}
+}
+
+func TestItemLifecycleEventsStayOutOfConversation(t *testing.T) {
+	var view presentation.Model
+	for _, input := range []struct {
+		method  string
+		payload string
+	}{
+		{method: "item/started", payload: `{"item":{"id":"cmd-1","type":"commandExecution","command":"go test ./..."}}`},
+		{method: "item/completed", payload: `{"item":{"id":"cmd-1","type":"commandExecution","command":"go test ./...","exitCode":0}}`},
+	} {
+		view.Apply(normalize(input.method, json.RawMessage(input.payload)))
+	}
+
+	if len(view.Conversation) != 0 || len(view.Telemetry) != 1 {
+		t.Fatalf("item lifecycle surfaces: conversation=%+v telemetry=%+v", view.Conversation, view.Telemetry)
 	}
 }

@@ -147,6 +147,24 @@ func (b *Backend) Start(ctx context.Context, eventBus bus.Bus) error {
 	}
 
 	if resume {
+		prior, readErr := client.ThreadRead(ctx, codexgo.ThreadReadRequest{ThreadID: thread.ID(), IncludeTurns: true})
+		if readErr != nil {
+			if err := eventBus.Publish(ctx, event.Event{
+				ID: watermill.NewUUID(), Timestamp: time.Now(), Backend: "codex", ThreadID: thread.ID(),
+				Kind: "warning", Summary: "Could not load prior Codex turns: " + readErr.Error(),
+			}); err != nil {
+				_ = b.Close()
+				return err
+			}
+		} else {
+			for _, priorEvent := range conversationHistory(prior) {
+				if err := eventBus.Publish(ctx, priorEvent); err != nil {
+					_ = b.Close()
+					return err
+				}
+			}
+		}
+
 		summary := "↻ resumed Codex session"
 		if cwd := session.ShortPath(state.CWD); cwd != "" {
 			summary += " · " + cwd
@@ -162,6 +180,57 @@ func (b *Backend) Start(ctx context.Context, eventBus bus.Bus) error {
 	}
 
 	return nil
+}
+
+func conversationHistory(thread codexgo.Thread) []event.Event {
+	history := make([]event.Event, 0)
+	for _, turn := range thread.Turns {
+		for _, item := range turn.Items {
+			kind := ""
+			switch item.Kind {
+			case codexgo.ItemKindUserMessage:
+				kind = "user.message"
+			case codexgo.ItemKindAgentMessage:
+				kind = "message.completed"
+			default:
+				continue
+			}
+
+			var payload struct {
+				Text    string `json:"text"`
+				Content []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
+			}
+			if err := json.Unmarshal(item.PayloadBytes(), &payload); err != nil {
+				continue
+			}
+
+			text := payload.Text
+			if item.Kind == codexgo.ItemKindUserMessage && len(payload.Content) > 0 {
+				parts := make([]string, 0, len(payload.Content))
+				for _, part := range payload.Content {
+					if part.Type == "text" && part.Text != "" {
+						parts = append(parts, part.Text)
+					}
+				}
+
+				text = strings.Join(parts, "\n")
+			}
+
+			if text == "" {
+				continue
+			}
+
+			history = append(history, event.Event{
+				ID: watermill.NewUUID(), Timestamp: time.Now(), Backend: "codex", ThreadID: thread.ID,
+				TurnID: turn.ID, ItemID: item.ID, Source: "thread/read", Kind: kind, Summary: text,
+			})
+		}
+	}
+
+	return history
 }
 
 func (b *Backend) ConfigureSession(state session.Session, resuming bool, save func(session.Session) error) {
@@ -806,7 +875,7 @@ func statusSummary(method string, data, item map[string]any) string {
 	}
 
 	// TODO: extract the operation name from the item or data if available, e.g. "plan", "reasoning", etc.
-	return "Status updated: " + method
+	return "Status updated: " + method + "\n"
 }
 
 func usageSummary(data map[string]any) string {

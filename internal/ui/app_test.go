@@ -8,6 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/lipgloss"
@@ -120,37 +121,81 @@ func TestCompletedReplayStaysOpenForInspection(t *testing.T) {
 	}
 }
 
-func TestEnterSubmitsComposerValue(t *testing.T) {
-	ctx := context.Background()
-	input := textinput.New()
+func TestEnterAddsComposerLine(t *testing.T) {
+	input := textarea.New()
 	input.Focus()
-	input.SetValue("  explain this repository  ")
+	input.SetValue("first line")
+	m := model{input: input, ctx: context.Background(), status: "idle"}
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if updated.(model).input.Value() != "first line\n" || updated.(model).status != "idle" {
+		t.Fatalf("Enter changed composer to %q and status %q", updated.(model).input.Value(), updated.(model).status)
+	}
+}
+
+func TestEnterKeepsFirstComposerLineVisible(t *testing.T) {
+	m := model{
+		input:  newComposerInput(),
+		focus:  focusComposer,
+		ctx:    context.Background(),
+		status: "idle",
+	}
+	m.input.Focus()
+	m.input.SetValue("first line")
+	m.resize(40, 10)
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := updated.(model).input.View()
+	if !strings.Contains(got, "first line") {
+		t.Fatalf("first composer line is hidden after Enter: %q", got)
+	}
+}
+
+func TestCtrlSSubmitsComposerValue(t *testing.T) {
+	ctx := context.Background()
+	input := textarea.New()
+	input.Focus()
+	input.SetValue("  first line\nsecond line  ")
 	var submitted string
 	m := model{
-		input:  input,
-		ctx:    ctx,
-		status: "idle",
+		input: input, ctx: ctx, status: "idle",
 		submit: func(_ context.Context, prompt string) error {
 			submitted = prompt
 			return nil
 		},
 	}
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
 	if cmd == nil {
-		t.Fatal("Enter did not schedule a submission")
+		t.Fatal("Ctrl+S did not schedule a submission")
 	}
 
 	msg := cmd()
 	if _, ok := msg.(submitResultMsg); !ok {
-		t.Fatalf("submission command returned %T", msg)
+		t.Fatalf("Ctrl+S returned %T, want submit result", msg)
 	}
 
-	if submitted != "explain this repository" {
-		t.Fatalf("submitted prompt = %q", submitted)
+	if submitted != "first line\nsecond line" || updated.(model).status != "working" {
+		t.Fatalf("submitted prompt = %q, status = %q", submitted, updated.(model).status)
 	}
+}
 
-	if updated.(model).status != "working" {
-		t.Fatalf("status after submission = %q", updated.(model).status)
+func TestComposerWrapsLongLinesAndCapsItsHeight(t *testing.T) {
+	m := interactiveTestModel()
+	m.input.SetValue(strings.Repeat("long message ", 12))
+	m.resize(24, 14)
+
+	if rows := lipgloss.Height(m.input.View()); rows < 2 || rows > 4 {
+		t.Fatalf("composer rows = %d, want 2 to 4: %q", rows, m.input.View())
+	}
+}
+
+func TestApprovalDetailsSummarizeCommandActions(t *testing.T) {
+	request := event.ApprovalRequest{
+		Kind: "command", Command: "rm -i cache.tmp", CWD: "/repo",
+		Details: `[{"type":"delete","path":"cache.tmp"}]`,
+	}
+	got := approvalDetail(request)
+	if !strings.Contains(got, "delete cache.tmp") || strings.Contains(got, `{"type"`) {
+		t.Fatalf("approval detail = %q, want readable action", got)
 	}
 }
 
@@ -461,14 +506,14 @@ func TestResizeAccountsForPanelInsets(t *testing.T) {
 								t.Fatalf("inspector width = %d, want %d", m.telemetryViewport.Width, want)
 							}
 
-							if m.viewport.Height < 1 || m.telemetryViewport.Height < 1 || m.input.Width < 1 || m.search.Width < 1 {
+							if m.viewport.Height < 1 || m.telemetryViewport.Height < 1 || m.input.Width() < 1 || m.search.Width < 1 {
 								t.Fatalf(
 									"invalid content dimensions: conversation=%dx%d inspector=%dx%d input=%d search=%d",
 									m.viewport.Width,
 									m.viewport.Height,
 									m.telemetryViewport.Width,
 									m.telemetryViewport.Height,
-									m.input.Width,
+									m.input.Width(),
 									m.search.Width,
 								)
 							}
@@ -588,7 +633,7 @@ func TestCompactViewKeepsFocusedApprovalVisible(t *testing.T) {
 				t.Fatalf("compact approval lost command or reason: %q", view)
 			}
 
-			if test.name == "approval height" && (!strings.Contains(view, ">") || !strings.Contains(view, "ctrl+c quit")) {
+			if test.name == "approval height" && (!strings.Contains(view, "›") || !strings.Contains(view, "ctrl+c quit")) {
 				t.Fatalf("compact approval hid the composer or help: %q", view)
 			}
 		})
@@ -1218,7 +1263,7 @@ func TestEscapeClearsComposerWithoutQuitting(t *testing.T) {
 }
 
 func interactiveTestModel() model {
-	input := textinput.New()
+	input := newComposerInput()
 	input.Focus()
 	return model{
 		input: input, ctx: context.Background(), status: "idle", focus: focusComposer,

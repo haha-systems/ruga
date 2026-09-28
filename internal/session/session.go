@@ -33,20 +33,28 @@ type ToolCall struct {
 	Arguments string `json:"arguments"`
 }
 
+// TranscriptMessage preserves the user-facing conversation when provider
+// context is compacted or reconstructed for resume.
+type TranscriptMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
 // Session contains the durable identity and continuation state for a run.
 type Session struct {
-	ID             string    `json:"id"`
-	Backend        string    `json:"backend"`
-	BackendSession string    `json:"backend_session,omitempty"`
-	Provider       string    `json:"provider,omitempty"`
-	Model          string    `json:"model,omitempty"`
-	CredentialEnv  string    `json:"credential_env,omitempty"`
-	CWD            string    `json:"cwd"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
-	Messages       []Message `json:"messages,omitempty"`
-	Summary        string    `json:"summary,omitempty"`
-	CompactedAt    time.Time `json:"compacted_at,omitempty"`
+	ID             string              `json:"id"`
+	Backend        string              `json:"backend"`
+	BackendSession string              `json:"backend_session,omitempty"`
+	Provider       string              `json:"provider,omitempty"`
+	Model          string              `json:"model,omitempty"`
+	CredentialEnv  string              `json:"credential_env,omitempty"`
+	CWD            string              `json:"cwd"`
+	CreatedAt      time.Time           `json:"created_at"`
+	UpdatedAt      time.Time           `json:"updated_at"`
+	Messages       []Message           `json:"messages,omitempty"`
+	Transcript     []TranscriptMessage `json:"transcript,omitempty"`
+	Summary        string              `json:"summary,omitempty"`
+	CompactedAt    time.Time           `json:"compacted_at,omitempty"`
 }
 
 // Store persists each session as an atomically replaced JSON file.

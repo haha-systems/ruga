@@ -29,7 +29,7 @@ func NewDefaultTheme() Theme {
 	const (
 		background = lipgloss.Color("#10151E")
 		text       = lipgloss.Color("#D9E1EA")
-		muted      = lipgloss.Color("#788697")
+		muted      = lipgloss.Color("#595959")
 		cyan       = lipgloss.Color("#75D9E9")
 		green      = lipgloss.Color("#9AD7A5")
 		amber      = lipgloss.Color("#E5BE80")
@@ -72,7 +72,7 @@ func NewDefaultTheme() Theme {
 		Title:         baseStyle.Foreground(cyan).Bold(true).Padding(0, 1),
 		Divider:       baseStyle.Foreground(line),
 		Panel:         baseStyle.Padding(1),
-		FocusedPanel:  baseStyle.Border(lipgloss.RoundedBorder()).BorderForeground(),
+		FocusedPanel:  baseStyle.Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#2B2B2B")),
 		Composer:      baseStyle,
 		MarkdownStyle: markdownStyle,
 	}

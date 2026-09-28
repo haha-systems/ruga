@@ -2,14 +2,17 @@ package ui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
 
 	"github.com/atotto/clipboard"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/harmonica"
@@ -73,7 +76,7 @@ const (
 type model struct {
 	viewport           viewport.Model
 	telemetryViewport  viewport.Model
-	input              textinput.Model
+	input              textarea.Model
 	stream             <-chan []event.Event
 	submit             func(context.Context, string) error
 	actions            Actions
@@ -121,11 +124,8 @@ var panelSpring = harmonica.NewSpring(harmonica.FPS(30), 18, 1)
 func Run(ctx context.Context, events <-chan event.Event, submit func(context.Context, string) error, actions Actions, configs ...Config) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	input := textinput.New()
-	input.Prompt = "› "
-	input.Placeholder = "Message Codex and press Enter"
+	input := newComposerInput()
 	input.Focus()
-	input.TextStyle = defaultTheme.Composer
 
 	search := textinput.New()
 	search.Prompt = "/ "
@@ -174,9 +174,11 @@ func Run(ctx context.Context, events <-chan event.Event, submit func(context.Con
 	return err
 }
 
-func (m model) Init() tea.Cmd { return tea.Batch(waitBatch(m.stream, m.readOnly), textinput.Blink) }
+func (m model) Init() tea.Cmd { return tea.Batch(waitBatch(m.stream, m.readOnly), textarea.Blink) }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	m.ensureComposer()
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		follow := !m.ready || m.viewport.AtBottom()
@@ -318,6 +320,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) View() string {
+	m.ensureComposer()
+
 	if !m.ready {
 		return "Starting Codex App Server…"
 	}
@@ -549,6 +553,8 @@ func desiredPanelWidth(width int) int {
 }
 
 func (m *model) resize(width, height int) {
+	m.ensureComposer()
+
 	m.width, m.height = max(1, width), max(1, height)
 	if m.width >= 70 && m.showTelemetry && m.panelWidth == 0 && m.panelHeight == 0 && !m.panelAnimating {
 		m.setPanelSize(m.desiredPanelSize())
@@ -556,7 +562,8 @@ func (m *model) resize(width, height int) {
 	}
 
 	inputInsets, _ := panelInsets(m.focus == focusComposer)
-	m.input.Width = max(1, m.width-inputInsets-lipgloss.Width(m.input.Prompt))
+	m.input.SetWidth(max(1, m.width-inputInsets))
+	m.input.SetHeight(composerRows(m.input.Value(), m.input.Width(), 4))
 	inspectorOuterWidth := m.width
 	if m.width >= 70 && m.panelWidth > 0 {
 		_, inspectorOuterWidth = m.viewWidths()
@@ -614,6 +621,38 @@ func (m *model) resize(width, height int) {
 	m.telemetryViewport.Height = telemetryHeight
 }
 
+func newComposerInput() textarea.Model {
+	input := textarea.New()
+	input.Prompt = "› "
+	input.Placeholder = "Talk to Ruga... · Ctrl+S sends · Enter adds a line"
+	input.ShowLineNumbers = false
+	input.MaxHeight = 4
+	input.SetHeight(1)
+	input.Cursor.Blink = true
+
+	input.FocusedStyle.Placeholder = defaultTheme.Composer.Foreground(lipgloss.Color("#424242"))
+	input.FocusedStyle.Base = defaultTheme.Composer
+	input.FocusedStyle.CursorLine = defaultTheme.Composer
+
+	// input.BlurredStyle.Text = defaultTheme.Composer
+	// input.BlurredStyle.Prompt = defaultTheme.Composer
+
+	return input
+}
+
+func (m *model) ensureComposer() {
+	if m.input.MaxHeight > 0 {
+		return
+	}
+
+	m.input = newComposerInput()
+	if m.focus == focusComposer && !m.readOnly {
+		m.input.Focus()
+	} else {
+		m.input.Blur()
+	}
+}
+
 func (m model) mainRegionHeight() int {
 	_, composerInsetsV := panelInsets(m.focus == focusComposer)
 	composerHeight := lipgloss.Height(m.input.View()) + composerInsetsV
@@ -626,6 +665,16 @@ func (m model) mainRegionHeight() int {
 	}
 
 	return max(1, m.height-headerHeight-footerHeight-composerHeight-approvalHeight-gapCount)
+}
+
+func composerRows(value string, width, maxRows int) int {
+	rows := 0
+	for line := range strings.SplitSeq(value, "\n") {
+		lineWidth := lipgloss.Width(line)
+		rows += max(1, (lineWidth+max(1, width)-1)/max(1, width))
+	}
+
+	return min(maxRows, max(1, rows))
 }
 
 func (m model) footerKeys() string {
@@ -642,7 +691,7 @@ func (m model) footerKeys() string {
 			return "replay · tab focus · ctrl+c quit" + inspectorKey
 		}
 
-		return "enter send · tab focus · ctrl+x interrupt · ctrl+c quit" + inspectorKey
+		return "ctrl+s send · enter new line · tab focus · ctrl+x interrupt · ctrl+c quit" + inspectorKey
 	}
 }
 
@@ -778,7 +827,7 @@ func approvalDetail(request event.ApprovalRequest) string {
 		}
 
 		if request.Details != "" && request.Details != "null" {
-			detail += " · actions: " + request.Details
+			detail += " · actions: " + readableApprovalDetails(request.Details)
 		}
 
 		return detail
@@ -792,7 +841,7 @@ func approvalDetail(request event.ApprovalRequest) string {
 		return detail
 
 	case "mcp_tool":
-		return "tool: " + request.Tool + " · input: " + request.Details
+		return "tool: " + request.Tool + " · input: " + readableApprovalDetails(request.Details)
 	case "permissions":
 		detail := "permissions: " + strings.Join(request.Permissions, ", ")
 		if request.Scope != "" {
@@ -804,6 +853,72 @@ func approvalDetail(request event.ApprovalRequest) string {
 	default:
 		return "Review this action before it continues"
 	}
+}
+
+func readableApprovalDetails(value string) string {
+	var actions []map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(value), &actions); err == nil && len(actions) > 0 {
+		parts := make([]string, 0, min(len(actions), 3))
+		for _, action := range actions[:min(len(actions), 3)] {
+			kind := approvalJSONField(action, "type", "action", "operation")
+			target := approvalJSONField(action, "path", "target", "command", "url")
+			summary := strings.TrimSpace(kind + " " + target)
+			if summary == "" {
+				summary = approvalJSONObject(action)
+			}
+
+			if summary != "" {
+				parts = append(parts, summary)
+			}
+		}
+
+		if len(actions) > len(parts) {
+			parts = append(parts, fmt.Sprintf("+%d more", len(actions)-len(parts)))
+		}
+
+		return strings.Join(parts, ", ")
+	}
+
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(value), &fields); err == nil && len(fields) > 0 {
+		return approvalJSONObject(fields)
+	}
+
+	return value
+}
+
+func approvalJSONField(fields map[string]json.RawMessage, names ...string) string {
+	for _, name := range names {
+		if raw, ok := fields[name]; ok {
+			var value string
+			if json.Unmarshal(raw, &value) == nil {
+				return value
+			}
+		}
+	}
+
+	return ""
+}
+
+func approvalJSONObject(fields map[string]json.RawMessage) string {
+	keys := make([]string, 0, len(fields))
+	for key := range fields {
+		keys = append(keys, key)
+	}
+
+	sort.Strings(keys)
+
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		var value string
+		if json.Unmarshal(fields[key], &value) != nil {
+			value = string(fields[key])
+		}
+
+		parts = append(parts, key+": "+value)
+	}
+
+	return strings.Join(parts, ", ")
 }
 
 func fitLine(value string, width int) string {
@@ -1201,29 +1316,39 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if msg.Type == tea.KeyEnter {
-		if m.readOnly {
-			return m, nil
-		}
-
-		prompt := strings.TrimSpace(m.input.Value())
-		if prompt == "" || m.turnActive || m.interrupting {
-			return m, nil
-		}
-
-		m.input.Reset()
-		m.status = "working"
-		m.turnActive = true
-		return m, submitPrompt(m.ctx, m.submit, prompt)
+	if msg.Type == tea.KeyCtrlS {
+		return m.submitComposer()
 	}
 
 	if m.readOnly {
 		return m, nil
 	}
 
+	if msg.Type == tea.KeyEnter && m.input.Height() < m.input.MaxHeight {
+		m.input.SetHeight(m.input.MaxHeight)
+	}
+
 	var inputCmd tea.Cmd
 	m.input, inputCmd = m.input.Update(msg)
+	m.resizeComposerIfNeeded()
 	return m, inputCmd
+}
+
+func (m model) submitComposer() (tea.Model, tea.Cmd) {
+	if m.readOnly {
+		return m, nil
+	}
+
+	prompt := strings.TrimSpace(m.input.Value())
+	if prompt == "" || m.turnActive || m.interrupting {
+		return m, nil
+	}
+
+	m.input.Reset()
+	m.resizeIfReady()
+	m.status = "working"
+	m.turnActive = true
+	return m, submitPrompt(m.ctx, m.submit, prompt)
 }
 
 func (m model) decideActiveApproval(decision event.ApprovalDecision) (tea.Model, tea.Cmd) {
@@ -1250,6 +1375,20 @@ func (m *model) resizeIfReady() {
 		m.resize(m.width, m.height)
 		m.refresh(false)
 	}
+}
+
+func (m *model) resizeComposerIfNeeded() {
+	rows := composerRows(m.input.Value(), m.input.Width(), 4)
+	if m.input.Height() == rows {
+		return
+	}
+
+	if m.ready {
+		m.resizeIfReady()
+		return
+	}
+
+	m.input.SetHeight(rows)
 }
 
 func (m *model) add(ev event.Event) {

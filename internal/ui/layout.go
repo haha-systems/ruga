@@ -3,6 +3,7 @@ package ui
 import "github.com/charmbracelet/lipgloss"
 
 func panelInsets(focused bool) (horizontal, vertical int) {
+	_ = focused
 	horizontal, vertical = 2, 2
 
 	return horizontal, vertical

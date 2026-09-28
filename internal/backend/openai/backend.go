@@ -154,6 +154,15 @@ func (b *Backend) Start(ctx context.Context, eventBus bus.Bus) error {
 	}
 
 	if b.resuming {
+		transcript := b.state.Transcript
+		if len(transcript) == 0 {
+			transcript = transcriptFromMessages(b.state.Messages)
+		}
+
+		if err := publishConversationHistory(ctx, b.eventBus, b.session, transcript); err != nil {
+			return err
+		}
+
 		turns := 0
 		for _, saved := range b.history {
 			if saved.Role == "assistant" {
@@ -172,6 +181,41 @@ func (b *Backend) Start(ctx context.Context, eventBus bus.Bus) error {
 	}
 
 	return nil
+}
+
+func publishConversationHistory(ctx context.Context, eventBus bus.Bus, threadID string, transcript []session.TranscriptMessage) error {
+	for _, saved := range transcript {
+		kind := ""
+		switch saved.Role {
+		case "user":
+			kind = "user.message"
+		case "assistant":
+			kind = "message.completed"
+		}
+
+		if kind == "" || saved.Content == "" {
+			continue
+		}
+
+		if err := publishTo(ctx, eventBus, event.Event{
+			Backend: "openai", Kind: kind, ThreadID: threadID, Summary: saved.Content,
+		}); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func transcriptFromMessages(messages []session.Message) []session.TranscriptMessage {
+	transcript := make([]session.TranscriptMessage, 0, len(messages))
+	for _, saved := range messages {
+		if (saved.Role == "user" || saved.Role == "assistant") && saved.Content != "" {
+			transcript = append(transcript, session.TranscriptMessage{Role: saved.Role, Content: saved.Content})
+		}
+	}
+
+	return transcript
 }
 
 func (b *Backend) ConfigureSession(state session.Session, resuming bool, save func(session.Session) error) {
@@ -576,7 +620,13 @@ func latestSummary(messages []session.Message) string {
 func (b *Backend) persistMessages(messages ...session.Message) error {
 	b.mu.Lock()
 	state := b.state
+	transcript := append([]session.TranscriptMessage(nil), state.Transcript...)
+	if len(transcript) == 0 {
+		transcript = transcriptFromMessages(state.Messages)
+	}
+
 	state.Messages = append(append([]session.Message(nil), state.Messages...), messages...)
+	state.Transcript = append(transcript, transcriptFromMessages(messages)...)
 	state.UpdatedAt = time.Now().UTC()
 	save := b.save
 	b.mu.Unlock()
