@@ -874,8 +874,16 @@ func statusSummary(method string, data, item map[string]any) string {
 		return "Reasoning summary updated"
 	}
 
-	// TODO: extract the operation name from the item or data if available, e.g. "plan", "reasoning", etc.
-	return "Status updated: " + method + "\n"
+	operation := firstString(item, "type", "operation")
+	if operation == "" {
+		operation = firstString(data, "type", "operation")
+	}
+
+	if operation == "" {
+		operation = method
+	}
+
+	return "Status updated: " + operation
 }
 
 func usageSummary(data map[string]any) string {

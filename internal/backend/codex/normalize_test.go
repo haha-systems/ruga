@@ -101,6 +101,27 @@ func TestNormalize(t *testing.T) {
 			wantItemID:  "it-reason",
 		},
 		{
+			name:        "status item without text",
+			method:      "item/reasoning/textDelta",
+			payload:     `{"item":{"type":"reasoning"}}`,
+			wantKind:    "status.update",
+			wantSummary: "Status updated: reasoning",
+		},
+		{
+			name:        "status data without text",
+			method:      "item/plan/delta",
+			payload:     `{"operation":"plan"}`,
+			wantKind:    "status.update",
+			wantSummary: "Status updated: plan",
+		},
+		{
+			name:        "status text takes priority",
+			method:      "item/plan/delta",
+			payload:     `{"text":"Reviewing files","operation":"plan","item":{"type":"reasoning"}}`,
+			wantKind:    "status.update",
+			wantSummary: "Reviewing files",
+		},
+		{
 			name:        "usage",
 			method:      "thread/tokenUsage/updated",
 			payload:     `{"tokenUsage":{"last":{"inputTokens":40,"outputTokens":10,"totalTokens":50},"modelContextWindow":128000}}`,
